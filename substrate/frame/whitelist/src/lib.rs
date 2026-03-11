@@ -80,6 +80,8 @@ pub mod pallet {
 		/// The handler of pre-images.
 		type Preimages: QueryPreimage<H = Self::Hashing> + StorePreimage;
 
+        type DeferredDispatchExpiration: Get<BlockNumberFor<Self>>;
+
 		/// The weight information for this pallet.
 		type WeightInfo: WeightInfo;
 	}
@@ -93,7 +95,10 @@ pub mod pallet {
 		CallWhitelisted { call_hash: T::Hash },
 		WhitelistedCallRemoved { call_hash: T::Hash },
 		WhitelistedCallDispatched { call_hash: T::Hash, result: DispatchResultWithPostInfo },
-	}
+        DispatchDeferred { call_hash: T::Hash },
+        DeferredDispatchRemoved { call_hash: T::Hash },
+        DeferredDispatchExecuted { call_hash: T::Hash },
+    }
 
 	#[pallet::error]
 	pub enum Error<T> {
@@ -111,6 +116,25 @@ pub mod pallet {
 
 	#[pallet::storage]
 	pub type WhitelistedCall<T: Config> = StorageMap<_, Twox64Concat, T::Hash, (), OptionQuery>;
+
+    #[pallet::storage]
+    pub type DeferredDispatch<T: Config> =
+        StorageMap<_, Twox64Concat, T::Hash, DeferredEntry<T>, OptionQuery>;
+
+    #[pallet::storage]
+    pub type DeferredDispatchPreimage<T: Config> =
+        StorageMap<_, Twox64Concat, T::Hash, Vec<u8>, OptionQuery>;
+    
+    #[derive(Encode, Decode, TypeInfo, MaxEncodedLen)]
+    #[scale_info(skip_type_params(T))]
+    pub struct DeferredEntry<T: Config> {
+        /// Block number when this deferred dispatch expires
+        pub expire_at: BlockNumberFor<T>,
+        /// Optional preimage for when the call was provided directly
+        pub preimage: Option<Vec<u8>>,
+        /// Encoded length of the call (for weight calculation)
+        pub call_encoded_len: u32,
+    }
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {

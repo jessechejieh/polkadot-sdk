@@ -58,7 +58,7 @@ impl pallet_whitelist::Config for Test {
 	type RuntimeCall = RuntimeCall;
 	type WhitelistOrigin = EnsureRoot<Self::AccountId>;
 	type DispatchWhitelistedOrigin = EnsureRoot<Self::AccountId>;
-    type DeferredDispatchExpiration = ConstU64<15>;
+	type DeferredDispatchExpiration = ConstU64<15>;
 	type Preimages = Preimage;
 	type WeightInfo = ();
 }

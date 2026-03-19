@@ -24,18 +24,23 @@ use frame::{
 	traits::{QueryPreimage, StorePreimage},
 };
 
-fn events() -> Vec<Event<Test>> {
-    let result = System::events()
-        .into_iter()
-        .map(|r| r.event)
-        .filter_map(|e| if let RuntimeEvent::Whitelist(inner) = e { Some(inner) } else { None })
-        .collect::<Vec<_>>();
-    
-    System::reset_events();
-          
-      result  
- } 
+fn run_to_block(n: u64) {
+	while System::block_number() < n {
+		System::set_block_number(System::block_number() + 1);
+	}
+}
 
+fn events() -> Vec<Event<Test>> {
+	let result = System::events()
+		.into_iter()
+		.map(|r| r.event)
+		.filter_map(|e| if let RuntimeEvent::Whitelist(inner) = e { Some(inner) } else { None })
+		.collect::<Vec<_>>();
+
+	System::reset_events();
+
+	result
+}
 
 #[test]
 fn test_whitelist_call_and_remove() {
@@ -88,25 +93,21 @@ fn test_whitelist_call_and_execute() {
 		let call_encoded_len = encoded_call.len() as u32;
 		let call_hash = <Test as frame_system::Config>::Hashing::hash(&encoded_call[..]);
 
-		assert_ok!(
-            Whitelist::dispatch_whitelisted_call(
-                RuntimeOrigin::root(),
-                call_hash,
-                call_encoded_len,
-                call_weight
-            ),
-        );
+		assert_ok!(Whitelist::dispatch_whitelisted_call(
+			RuntimeOrigin::root(),
+			call_hash,
+			call_encoded_len,
+			call_weight
+		),);
 
-        assert!(events().iter().any(|event| { 
-            match event { 
-                Event::<Test>::DispatchDeferred { call_hash: hash } => { 
-                    hash == &call_hash
-                }, 
-                _ => false
-            } 
-        }));
+		assert!(events().iter().any(|event| {
+			match event {
+				Event::<Test>::DispatchDeferred { call_hash: hash } => hash == &call_hash,
+				_ => false,
+			}
+		}));
 
-        assert_noop!(
+		assert_noop!(
 			Whitelist::dispatch_whitelisted_call(
 				RuntimeOrigin::root(),
 				call_hash,
@@ -119,7 +120,7 @@ fn test_whitelist_call_and_execute() {
 		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
 
 		// Use signed Origin after dispatch has been defeered
-        assert_noop!(
+		assert_noop!(
 			Whitelist::dispatch_whitelisted_call(
 				RuntimeOrigin::signed(1),
 				call_hash,
@@ -129,15 +130,16 @@ fn test_whitelist_call_and_execute() {
 			crate::Error::<Test>::UnavailablePreImage,
 		);
 
-        // Use root after dispatch has been defeered
-        assert_noop!(
-            Whitelist::dispatch_whitelisted_call(
-                RuntimeOrigin::root(), 
-                call_hash, 
-                call_encoded_len, 
-                call_weight
-            ), crate::Error::<Test>::UnavailablePreImage,
-        );
+		// Use root after dispatch has been defeered
+		assert_noop!(
+			Whitelist::dispatch_whitelisted_call(
+				RuntimeOrigin::root(),
+				call_hash,
+				call_encoded_len,
+				call_weight
+			),
+			crate::Error::<Test>::UnavailablePreImage,
+		);
 
 		assert_ok!(Preimage::note(encoded_call.into()));
 
@@ -162,23 +164,19 @@ fn test_whitelist_call_and_execute() {
 
 		assert!(!Preimage::is_requested(&call_hash));
 
-		assert_ok!(
-			Whitelist::dispatch_whitelisted_call(
-				RuntimeOrigin::root(),
-				call_hash,
-				call_encoded_len,
-				call_weight
-			),
-		);
+		assert_ok!(Whitelist::dispatch_whitelisted_call(
+			RuntimeOrigin::root(),
+			call_hash,
+			call_encoded_len,
+			call_weight
+		),);
 
-        assert!(events().iter().any(|event| { 
-            match event { 
-                Event::<Test>::DispatchDeferred { call_hash: hash } => { 
-                    hash == &call_hash 
-                }, 
-                _ => false
-            } 
-        }));
+		assert!(events().iter().any(|event| {
+			match event {
+				Event::<Test>::DispatchDeferred { call_hash: hash } => hash == &call_hash,
+				_ => false,
+			}
+		}));
 	});
 }
 
@@ -211,45 +209,46 @@ fn test_whitelist_call_and_execute_failing_call() {
 #[test]
 fn test_whitelist_call_and_execute_without_note_preimage() {
 	new_test_ext().execute_with(|| {
-		let call = Box::new(RuntimeCall::System(frame_system::Call::remark {
-			remark: vec![1],
-		}));
+		let call = Box::new(RuntimeCall::System(frame_system::Call::remark { remark: vec![1] }));
 		let call_hash = <Test as frame_system::Config>::Hashing::hash_of(&call);
 
 		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
 		assert!(Preimage::is_requested(&call_hash));
 
-        assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(RuntimeOrigin::root(), call.clone()));
+		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
+			RuntimeOrigin::root(),
+			call.clone()
+		));
 
-        assert!(events().iter().any(|event| {
-            match event {
-                Event::<Test>::WhitelistedCallDispatched { call_hash: hash, result } => {
-                    hash == &call_hash && result.is_ok()
-                },
-                _ => false
-            }
-        }));
+		assert!(events().iter().any(|event| {
+			match event {
+				Event::<Test>::WhitelistedCallDispatched { call_hash: hash, result } => {
+					hash == &call_hash && result.is_ok()
+				},
+				_ => false,
+			}
+		}));
 
 		assert!(!Preimage::is_requested(&call_hash));
 
-		assert_ok!(
-			Whitelist::dispatch_whitelisted_call_with_preimage(RuntimeOrigin::root(), call.clone())
-		);
+		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
+			RuntimeOrigin::root(),
+			call.clone()
+		));
 
-        assert!(events().iter().any(|event| { 
-            match event { 
-                Event::<Test>::DispatchDeferred { call_hash: hash } => { 
-                    hash == &call_hash 
-                }, 
-                _ => false
-            }
-        }));
+		assert!(events().iter().any(|event| {
+			match event {
+				Event::<Test>::DispatchDeferred { call_hash: hash } => hash == &call_hash,
+				_ => false,
+			}
+		}));
 
-        assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
+		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
 
-        assert_ok!(
-            Whitelist::dispatch_whitelisted_call_with_preimage(RuntimeOrigin::signed(1), call)
-        );
+		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
+			RuntimeOrigin::signed(1),
+			call
+		));
 	});
 }
 

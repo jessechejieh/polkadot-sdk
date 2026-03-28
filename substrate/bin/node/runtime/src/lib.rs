@@ -2251,6 +2251,8 @@ impl pallet_whitelist::Config for Runtime {
 	type WhitelistOrigin = EnsureRoot<AccountId>;
 	type DispatchWhitelistedOrigin = EnsureRoot<AccountId>;
 	type Preimages = Preimage;
+    type DeferredDispatchExpiration = ConstU32<15>;
+    type BlockNumberProvider = frame_system::Pallet<Runtime>;
 	type WeightInfo = pallet_whitelist::weights::SubstrateWeight<Runtime>;
 }
 

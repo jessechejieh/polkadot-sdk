@@ -168,13 +168,13 @@ fn test_whitelist_call_and_execute() {
             matches!(event, Event::<Test>::CallWhitelisted { call_hash: hash } if hash == &call_hash)
         });
 
-        let dispatched_ok = post_dispatch_events.iter().any(|event| { 
+        let dispatched_ok = post_dispatch_events.iter().any(|event| {
             matches!(
                 event,
                 Event::<Test>::WhitelistedCallDispatched {
                     call_hash: hash,
                     result: Ok(_)
-                } if hash == &call_hash 
+                } if hash == &call_hash
             )
         });
 
@@ -373,7 +373,6 @@ fn test_deferred_dispatch_expires_after_block_delay() {
 			}
 		}));
 
-		// Advance past expiry (T::DispatchWhitelistExpiry = 16 blocks in test config)
 		run_to_block(16);
 
 		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));

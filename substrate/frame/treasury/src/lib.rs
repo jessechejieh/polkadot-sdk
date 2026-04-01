@@ -286,6 +286,14 @@ pub mod pallet {
 		#[pallet::constant]
 		type PayoutPeriod: Get<BlockNumberFor<Self, I>>;
 
+		/// Maximum number of spends in the payout queue.
+		#[pallet::constant]
+		type MaxQueuedSpends: Get<u32>;
+
+		/// Period after which a spend's order expires and can be moved to the end of the queue.
+		#[pallet::constant]
+		type OrderExpirationPeriod: Get<BlockNumberFor<Self, I>>;
+
 		/// Helper type for benchmarks.
 		#[cfg(feature = "runtime-benchmarks")]
 		type BenchmarkHelper: ArgumentsFactory<Self::AssetKind, Self::Beneficiary>;
@@ -360,6 +368,16 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type LastSpendPeriod<T, I = ()> = StorageValue<_, BlockNumberFor<T, I>, OptionQuery>;
 
+	/// The next spend to be paid out, with its order expiration block.
+	#[pallet::storage]
+	pub type NextPayout<T: Config<I>, I: 'static = ()> =
+		StorageValue<_, (SpendIndex, BlockNumberFor<T, I>), OptionQuery>;
+
+	/// The queue of mature spends in payout order.
+	#[pallet::storage]
+	pub type PayoutQueue<T: Config<I>, I: 'static = ()> =
+		StorageValue<_, BoundedVec<SpendIndex, T::MaxQueuedSpends>, ValueQuery>;
+
 	#[pallet::genesis_config]
 	#[derive(frame_support::DefaultNoBound)]
 	pub struct GenesisConfig<T: Config<I>, I: 'static = ()> {
@@ -418,6 +436,10 @@ pub mod pallet {
 		/// A spend was processed and removed from the storage. It might have been successfully
 		/// paid or it may have expired.
 		SpendProcessed { index: SpendIndex },
+		/// A mature spend has been added to the payout queue.
+		SpendEnqueued { index: SpendIndex },
+		/// The payout queue has been rotated due to order expiration.
+		PayoutQueueRotated { index: SpendIndex },
 	}
 
 	/// Error for the treasury pallet.
@@ -446,6 +468,12 @@ pub mod pallet {
 		NotAttempted,
 		/// The payment has neither failed nor succeeded yet.
 		Inconclusive,
+		/// Spend is not the next in the payout queue.
+		NotNextPayout,
+		/// Spend is already in the payout queue.
+		AlreadyQueued,
+		/// Payout queue is full.
+		QueueFull,
 	}
 
 	#[pallet::hooks]
@@ -725,6 +753,9 @@ pub mod pallet {
 		/// In case of a payout failure, the spend status must be updated with the `check_status`
 		/// dispatchable before retrying with the current function.
 		///
+		/// Only the spend designated as `NextPayout` can be claimed. This ensures FIFO ordering
+		/// of mature spends.
+		///
 		/// ### Parameters
 		/// - `index`: The spend index.
 		///
@@ -735,6 +766,11 @@ pub mod pallet {
 		#[pallet::weight(T::WeightInfo::payout())]
 		pub fn payout(origin: OriginFor<T>, index: SpendIndex) -> DispatchResult {
 			ensure_signed(origin)?;
+
+			// Ensure this is the next payout in the queue
+			let next_payout = NextPayout::<T, I>::get().ok_or(Error::<T, I>::NotNextPayout)?;
+			ensure!(next_payout.0 == index, Error::<T, I>::NotNextPayout);
+
 			let mut spend = Spends::<T, I>::get(index).ok_or(Error::<T, I>::InvalidIndex)?;
 			let now = T::BlockNumberProvider::current_block_number();
 			ensure!(now >= spend.valid_from, Error::<T, I>::EarlyPayout);
@@ -768,6 +804,9 @@ pub mod pallet {
 		/// If a spend has either succeeded or expired, it is removed from the storage by this
 		/// function. In such instances, transaction fees are refunded.
 		///
+		/// This function also updates the payout queue, removing completed/expired spends
+		/// and setting the next payout if available.
+		///
 		/// ### Parameters
 		/// - `index`: The spend index.
 		///
@@ -787,6 +826,7 @@ pub mod pallet {
 
 			if now > spend.expire_at && !matches!(spend.status, State::Attempted { .. }) {
 				// spend has expired and no further status update is expected.
+				Self::remove_from_queue(index);
 				Spends::<T, I>::remove(index);
 				Self::deposit_event(Event::<T, I>::SpendProcessed { index });
 				return Ok(Pays::No.into());
@@ -804,6 +844,7 @@ pub mod pallet {
 					Self::deposit_event(Event::<T, I>::PaymentFailed { index, payment_id });
 				},
 				Status::Success | Status::Unknown => {
+					Self::remove_from_queue(index);
 					Spends::<T, I>::remove(index);
 					Self::deposit_event(Event::<T, I>::SpendProcessed { index });
 					return Ok(Pays::No.into());
@@ -839,8 +880,126 @@ pub mod pallet {
 				Error::<T, I>::AlreadyAttempted
 			);
 
+			Self::remove_from_queue(index);
 			Spends::<T, I>::remove(index);
 			Self::deposit_event(Event::<T, I>::AssetSpendVoided { index });
+			Ok(())
+		}
+
+		/// Add a matured spend to the payout queue.
+		///
+		/// ## Dispatch Origin
+		///
+		/// Must be signed (permissionless).
+		///
+		///  ## Details
+		///
+		///  This call adds a spend that has matured (current block >= valid_from) to the end
+		///  of the payout queue. If the queue is empty, the spend becomes the `NextPayout`
+		///  with an expiration block set to `now + OrderExpirationPeriod`.
+		///
+		///  The spend must not be expired (current block < expire_at) and must not already
+		///  be in the queue.
+		///
+		///  ### Parameters
+		///  - `index`: The spend index.
+		///
+		///  ## Events
+		///
+		///  Emits [`Event::SpendEnqueued`] if successful.
+		#[pallet::call_index(9)]
+		#[pallet::weight(100)]
+		pub fn enqueue_mature_spend(origin: OriginFor<T>, index: SpendIndex) -> DispatchResult {
+			ensure_signed(origin)?;
+
+			let spend = Spends::<T, I>::get(index).ok_or(Error::<T, I>::InvalidIndex)?;
+			let now = T::BlockNumberProvider::current_block_number();
+
+			// Verify spend is in Pending status
+			ensure!(
+				matches!(spend.status, PaymentState::Pending | PaymentState::Failed),
+				Error::<T, I>::AlreadyAttempted
+			);
+
+			// Verify spend has matured
+			ensure!(now >= spend.valid_from, Error::<T, I>::EarlyPayout);
+
+			// Verify spend has not expired
+			ensure!(spend.expire_at > now, Error::<T, I>::SpendExpired);
+
+			// Check if this is the current NextPayout
+			let queue = PayoutQueue::<T, I>::get();
+			ensure!(!queue.contains(&index), Error::<T, I>::AlreadyQueued);
+
+			// Check if this is the current NextPayout
+			if let Some((next_index, _)) = NextPayout::<T, I>::get() {
+				ensure!(next_index != index, Error::<T, I>::AlreadyQueued);
+			}
+
+			// Add to queue
+			PayoutQueue::<T, I>::try_append(index).map_err(|_| Error::<T, I>::QueueFull)?;
+
+			// If queue was empty (no NextPayout), set this as NextPayout
+			if NextPayout::<T, I>::get().is_none() {
+				let expire_at = now.saturating_add(T::OrderExpirationPeriod::get());
+				NextPayout::<T, I>::put((index, expire_at));
+			}
+
+			Self::deposit_event(Event::<T, I>::SpendEnqueued { index });
+			Ok(())
+		}
+
+		/// Rotate the payout queue when the current order expires.
+		///
+		/// ## Dispatch Origin
+		///
+		/// Must be signed (permissionless).
+		///
+		/// ## Details
+		///
+		/// This call moves the current `NextPayout` to the end of the queue when its order
+		/// has expired (expire_at < now). The next spend in the queue becomes the new
+		/// `NextPayout` with a fresh expiration period.
+		///
+		/// This prevents a single spend from permanently blocking the queue when it cannot
+		/// be paid out (e.g., due to insufficient funds).
+		///
+		/// ## Events
+		///
+		/// /// Emits [`Event::PayoutQueueRotated`] if successful.
+		#[pallet::call_index(10)]
+		#[pallet::weight(100)]
+		pub fn rotate_payout_queue(origin: OriginFor<T>) -> DispatchResult {
+			ensure_signed(origin)?;
+
+			let (current_index, expire_at) =
+				NextPayout::<T, I>::get().ok_or(Error::<T, I>::NotNextPayout)?;
+
+			let now = T::BlockNumberProvider::current_block_number();
+
+			// Ensure the order has expired
+			ensure!(expire_at < now, Error::<T, I>::NotNextPayout);
+
+			// Remove first element from queue
+			let mut queue = PayoutQueue::<T, I>::get();
+			if !queue.is_empty() {
+				queue.remove(0);
+			}
+
+			// Push expired index to end of queue
+			queue.try_push(current_index).map_err(|_| Error::<T, I>::QueueFull)?;
+
+			// Set new NextPayout if queue is not empty
+			if let Some(&new_next) = queue.first() {
+				let new_expire_at = now.saturating_add(T::OrderExpirationPeriod::get());
+				NextPayout::<T, I>::put((new_next, new_expire_at));
+			} else {
+				NextPayout::<T, I>::kill();
+			}
+
+			PayoutQueue::<T, I>::put(queue);
+
+			Self::deposit_event(Event::<T, I>::PayoutQueueRotated { index: current_index });
 			Ok(())
 		}
 	}
@@ -901,6 +1060,30 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 	#[allow(deprecated)]
 	pub fn approvals() -> BoundedVec<ProposalIndex, T::MaxApprovals> {
 		Approvals::<T, I>::get()
+	}
+
+	/// Remove a spend from the payout queue and update NextPayout.
+	/// Called when a spend is successfully paid out, expired, or voided.
+	fn remove_from_queue(index: SpendIndex) {
+		if let Some((next_index, _)) = NextPayout::<T, I>::get() {
+			if next_index == index {
+				// This was the next payout, move to the next one
+				let mut queue = PayoutQueue::<T, I>::get();
+				if !queue.is_empty() {
+					queue.remove(0);
+				}
+
+				if let Some(&new_next) = queue.first() {
+					let now = T::BlockNumberProvider::current_block_number();
+					let new_expire_at = now.saturating_add(T::OrderExpirationPeriod::get());
+					NextPayout::<T, I>::put((new_next, new_expire_at));
+				} else {
+					NextPayout::<T, I>::kill();
+				}
+
+				PayoutQueue::<T, I>::put(queue);
+			}
+		}
 	}
 
 	/// Spend some money! returns number of approvals before spend.
@@ -1007,6 +1190,7 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 	fn do_try_state() -> Result<(), sp_runtime::TryRuntimeError> {
 		Self::try_state_proposals()?;
 		Self::try_state_spends()?;
+		Self::try_state_payout_queue()?;
 
 		Ok(())
 	}
@@ -1077,6 +1261,42 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 			);
 			Ok(())
 		})?;
+
+		Ok(())
+	}
+
+	/// ## Invariants of payout queue storage items
+	///
+	/// 1. If [`NextPayout`] is Some, the first element of [`PayoutQueue`] must match the spend
+	/// index in [`NextPayout`].
+	/// 2. All spend indices in [`PayoutQueue`] must exist in [`Spends`] and have Pending or Failed
+	/// status.
+	/// 3. The length of [`PayoutQueue`] must not exceed [`Config::MaxQueuedSpends`].
+	#[cfg(any(feature = "try-runtime", test))]
+	fn try_state_payout_queue() -> Result<(), sp_runtime::TryRuntimeError> {
+		let queue = PayoutQueue::<T, I>::get();
+
+		ensure!(
+			queue.len() as u32 <= T::MaxQueuedSpends::get(),
+			"Payout queue length exceeds MaxQueuedSpends."
+		);
+
+		if let Some((next_index, _)) = NextPayout::<T, I>::get() {
+			ensure!(
+				queue.first() == Some(&next_index),
+				"NextPayout must match the first element of PayoutQueue."
+			);
+		}
+
+		for spend_index in queue.iter() {
+			let spend = Spends::<T, I>::get(spend_index).ok_or(
+				sp_runtime::TryRuntimeError::Other("Spend in queue must exist in Spends."),
+			)?;
+			ensure!(
+				matches!(spend.status, PaymentState::Pending | PaymentState::Failed),
+				"Spend in queue must have Pending or Failed status."
+			);
+		}
 
 		Ok(())
 	}

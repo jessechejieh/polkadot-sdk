@@ -139,6 +139,8 @@ parameter_types! {
 	pub const TreasuryPalletId: PalletId = PalletId(*b"py/trsry");
 	pub TreasuryAccount: u128 = Treasury::account_id();
 	pub const SpendPayoutPeriod: u64 = 5;
+	pub const MaxQueuedSpends: u32 = 100;
+	pub const OrderExpirationPeriod: u64 = 2;
 }
 
 pub struct TestSpendOrigin;
@@ -195,6 +197,8 @@ impl Config for Test {
 	type Paymaster = TestPay;
 	type BalanceConverter = MulBy<ConstU64<2>>;
 	type PayoutPeriod = SpendPayoutPeriod;
+	type MaxQueuedSpends = MaxQueuedSpends;
+	type OrderExpirationPeriod = OrderExpirationPeriod;
 	type BlockNumberProvider = System;
 	#[cfg(feature = "runtime-benchmarks")]
 	type BenchmarkHelper = ();
@@ -655,6 +659,7 @@ fn spend_payout_works() {
 		System::set_block_number(1);
 		// approve a `2` coins spend of asset `1` to beneficiary `6`, the spend valid from now.
 		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(6), None));
+		// spend is automatically added to payout queue
 		// payout the spend.
 		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
 		// beneficiary received `2` coins of asset `1`.
@@ -742,6 +747,11 @@ fn spend_valid_from_works() {
 		assert_noop!(Treasury::payout(RuntimeOrigin::signed(1), 0), Error::<Test, _>::EarlyPayout);
 		System::set_block_number(2);
 		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
+
+		// Complete spend 0 so spend 1 can become NextPayout
+		let payment_id = get_payment_id(0).expect("no payment attempt");
+		set_status(payment_id, PaymentStatus::Success);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0));
 
 		System::set_block_number(5);
 		// spend approved even if `valid_from` in the past since the payout period has not passed.
@@ -837,6 +847,10 @@ fn check_status_works() {
 			Treasury::check_status(RuntimeOrigin::signed(1), 3),
 			Error::<Test, _>::Inconclusive
 		);
+
+		// Complete spend 3 so spend 4 can become NextPayout
+		set_status(payment_id, PaymentStatus::Success);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 3));
 
 		// spend `4` removed since the payment status is unknown.
 		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(6), None));
@@ -1044,5 +1058,371 @@ fn multiple_spend_periods_work() {
 		assert_eq!(Treasury::pot(), 64);
 		// Even though we are on block 9, the last spend period was block 8.
 		assert_eq!(LastSpendPeriod::<Test>::get(), Some(8));
+	});
+}
+
+#[test]
+fn spend_auto_enqueues_to_payout_queue() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+		// Create a spend - should be automatically added to payout queue
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(6), None));
+		// Check queue state - spend should be NextPayout since queue was empty
+		assert_eq!(NextPayout::<Test>::get(1u32), Some((0, 3))); // now + OrderExpirationPeriod
+
+		// Queue should be empty since this was the first spend
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![]);
+	});
+}
+
+#[test]
+fn multiple_spends_auto_enqueue_in_sorted_order() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create multiple spends with different valid_from values
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(100),
+			Some(5)
+		));
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			2,
+			Box::new(200),
+			Some(3)
+		));
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(300),
+			Some(7)
+		));
+
+		// First spend should be NextPayout
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+
+		let queue = PayoutQueue::<Test>::get(1u32);
+		assert_eq!(queue, vec![(1, 3), (2, 7)]);
+	});
+}
+
+#[test]
+fn payout_only_works_for_next_payout_per_asset() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create two spends for same asset
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(6), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(7), None));
+
+		// Payout spend 1 (not next) should fail
+		assert_noop!(
+			Treasury::payout(RuntimeOrigin::signed(1), 1),
+			Error::<Test, _>::NotNextPayout
+		);
+
+		// Payout spend 0 (next) should succeed
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
+	});
+}
+
+#[test]
+fn different_assets_have_independent_queues() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create spends for different assets
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(100), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(2), 2, Box::new(200), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(150), None));
+
+		// Each asset should have its own NextPayout
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+		assert_eq!(NextPayout::<Test>::get(2u32).map(|(idx, _)| idx), Some(1));
+
+		// Asset 1 queue should have spend 2
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(2, 1)]);
+
+		// Asset 2 queue should be empty
+		assert_eq!(PayoutQueue::<Test>::get(2u32), vec![]);
+
+		// Can payout asset 2 even though asset 1 has earlier spends
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 1));
+		assert_eq!(paid(200, 2), 2);
+	});
+}
+
+#[test]
+fn check_status_rotates_expired_order() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create two spends for same asset
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(100), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(200), None));
+
+		// Verify initial state
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+
+		// Move past order expiration
+		System::set_block_number(4);
+
+		// check_status should rotate the queue
+		let info = Treasury::check_status(RuntimeOrigin::signed(1), 0).unwrap();
+		assert_eq!(info.pays_fee, Pays::No);
+
+		// Queue should be rotated: spend 0 moved to back
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 1)]);
+
+		System::assert_last_event(
+			Event::<Test, _>::PayoutQueueRotated { asset_kind: 1, index: 0 }.into(),
+		);
+	});
+}
+
+#[test]
+fn check_status_does_not_rotate_if_not_expired() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create two spends
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(100), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(200), None));
+
+		// Try check_status before expiration - should fail with NotAttempted
+		assert_noop!(
+			Treasury::check_status(RuntimeOrigin::signed(1), 0),
+			Error::<Test, _>::NotAttempted
+		);
+
+		// State should be unchanged
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+	});
+}
+
+#[test]
+fn check_status_removes_completed_spend_and_promotes_next() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create two spends
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(100), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(200), None));
+
+		// Payout first spend
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
+		let payment_id = get_payment_id(0).unwrap();
+		set_status(payment_id, PaymentStatus::Success);
+
+		// check_status should remove completed spend and promote next
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0));
+
+		// Spend 1 should now be NextPayout
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![]);
+	});
+}
+
+#[test]
+fn void_spend_removes_from_queue_and_promotes_next() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create two spends
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(100), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(200), None));
+
+		// Void the first spend
+		assert_ok!(Treasury::void_spend(RuntimeOrigin::root(), 0));
+
+		// Spend 1 should now be NextPayout
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![]);
+
+		// Spend 0 should be removed
+		assert_eq!(Spends::<Test, _>::get(0), None);
+	});
+}
+
+#[test]
+fn fifo_ordering_enforced_per_asset() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create three spends in order for same asset
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(100), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(200), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(300), None));
+
+		// Payout should be in FIFO order
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+
+		// Payout spend 0
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
+		let payment_id = get_payment_id(0).unwrap();
+		set_status(payment_id, PaymentStatus::Success);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0));
+
+		// Next should be spend 1
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+
+		// Payout spend 1
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 1));
+		let payment_id = get_payment_id(1).unwrap();
+		set_status(payment_id, PaymentStatus::Success);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 1));
+
+		// Next should be spend 2
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(2));
+
+		// Verify beneficiaries received in order
+		assert_eq!(paid(100, 1), 1);
+		assert_eq!(paid(200, 1), 2);
+	});
+}
+
+#[test]
+fn queue_full_scenario() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create spends up to MaxQueuedSpends for asset 1
+		for i in 0..<Test as Config>::MaxQueuedSpends::get().saturating_add(1) {
+			assert_ok!(Treasury::spend(
+				RuntimeOrigin::signed(10),
+				Box::new(1),
+				1,
+				Box::new(i as u128),
+				None
+			));
+		}
+
+		// Next spend should fail with QueueFull
+		assert_noop!(
+			Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(999u128), None),
+			Error::<Test, _>::QueueFull
+		);
+
+		// But can still create spends for different asset
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(2),
+			1,
+			Box::new(1000u128),
+			None
+		));
+	});
+}
+
+#[test]
+fn complex_scenario_with_rotation_and_completion() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create three spends
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(100), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(200), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(300), None));
+
+		// First payout succeeds
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
+		let payment_id = get_payment_id(0).unwrap();
+		set_status(payment_id, PaymentStatus::Success);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0));
+
+		// Second payout fails but stays in queue
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 1));
+		let payment_id = get_payment_id(1).unwrap();
+		set_status(payment_id, PaymentStatus::Failure);
+		unpay(200, 1, 200);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 1));
+
+		// Move past order expiration for spend 1
+		System::set_block_number(4);
+
+		// check_status should rotate the queue
+		let info = Treasury::check_status(RuntimeOrigin::signed(1), 1).unwrap();
+		assert_eq!(info.pays_fee, Pays::No);
+
+		// Spend 2 should now be NextPayout
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(2));
+
+		// Payout spend 2
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 2));
+		let payment_id = get_payment_id(2).unwrap();
+		set_status(payment_id, PaymentStatus::Success);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 2));
+
+		// Spend 1 should be back at head after rotation
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+
+		// Retry spend 1
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 1));
+	});
+}
+
+#[test]
+fn try_state_payout_queue_invariants() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create some spends
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(100),
+			Some(5)
+		));
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			2,
+			Box::new(200),
+			Some(3)
+		));
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(300),
+			Some(7)
+		));
+
+		// Check invariants pass
+		assert!(Treasury::do_try_state().is_ok());
+
+		// Verify queue is sorted
+		let queue = PayoutQueue::<Test>::get(1u32);
+		assert_eq!(queue, vec![(1, 3), (2, 7)]);
+	});
+}
+
+#[test]
+fn early_spend_cannot_be_paid_before_valid_from() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Create a spend with future valid_from
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(100),
+			Some(10)
+		));
+
+		// Even though it's the NextPayout, it can't be paid before valid_from
+		assert_noop!(Treasury::payout(RuntimeOrigin::signed(1), 0), Error::<Test, _>::EarlyPayout);
+
+		// Move to valid_from block
+		System::set_block_number(10);
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
 	});
 }

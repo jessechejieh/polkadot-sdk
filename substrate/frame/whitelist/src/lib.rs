@@ -53,7 +53,7 @@ use sp_runtime::traits::BlockNumberProvider;
 
 pub use pallet::*;
 
-pub type BlockNumberFor<T> =
+pub type ProvidedBlockNumberFor<T> =
 	<<T as Config>::BlockNumberProvider as BlockNumberProvider>::BlockNumber;
 
 /// Source of the call data for dispatch.
@@ -64,7 +64,7 @@ enum CallSource<T: Config> {
 	/// Fetch and decode from preimage storage (used by `dispatch_whitelisted_call`).
 	Preimage { encoded_len: u32, weight_witness: Weight },
 	/// Call provided directly (used by `dispatch_whitelisted_call_with_preimage`).
-	Direct { call: <T as Config>::RuntimeCall, encoded_len: u32 },
+	Direct { call: Box<<T as Config>::RuntimeCall>, encoded_len: u32 },
 }
 
 #[frame::pallet]
@@ -95,11 +95,14 @@ pub mod pallet {
 		/// The handler of pre-images.
 		type Preimages: QueryPreimage<H = Self::Hashing> + StorePreimage;
 
-        /// The number of blocks after which a deferred dispatch expires.
-		type DeferredDispatchExpiration: Get<BlockNumberFor<Self>>;
+		/// The number of provided blocks after which a deferred dispatch expires.
+		type DeferredDispatchExpiration: Get<ProvidedBlockNumberFor<Self>>;
 
-		/// Provider for the block number. Normally this is the `frame_system` pallet.
-        type BlockNumberProvider: BlockNumberProvider;
+		/// Provider for the block number.
+		///
+		/// For detailed documentation on usage patterns, see:
+		/// - [`pallet_proxy::Config::BlockNumberProvider`]
+		type BlockNumberProvider: BlockNumberProvider;
 
 		/// The weight information for this pallet.
 		type WeightInfo: WeightInfo;
@@ -111,12 +114,29 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		CallWhitelisted { call_hash: T::Hash },
-		WhitelistedCallRemoved { call_hash: T::Hash },
-		WhitelistedCallDispatched { call_hash: T::Hash, result: DispatchResultWithPostInfo },
-		DispatchDeferred { call_hash: T::Hash },
-		DeferredDispatchRemoved { call_hash: T::Hash },
-		DeferredDispatchExecuted { call_hash: T::Hash, who: T::AccountId },
+		CallWhitelisted {
+			call_hash: T::Hash,
+		},
+		WhitelistedCallRemoved {
+			call_hash: T::Hash,
+		},
+		WhitelistedCallDispatched {
+			call_hash: T::Hash,
+			result: DispatchResultWithPostInfo,
+		},
+		/// A call dispatch has been deferred to a future provided block.
+		DispatchDeferred {
+			call_hash: T::Hash,
+		},
+		/// A deferred dispatch entry has been removed after expiration.
+		DeferredDispatchRemoved {
+			call_hash: T::Hash,
+		},
+		/// Emitted only when a relayer (signed origin) executes a deferred dispatch.
+		DeferredDispatchExecuted {
+			call_hash: T::Hash,
+			who: T::AccountId,
+		},
 	}
 
 	#[pallet::error]
@@ -151,8 +171,8 @@ pub mod pallet {
 	#[derive(Encode, Decode, TypeInfo, MaxEncodedLen)]
 	#[scale_info(skip_type_params(T))]
 	pub struct DeferredEntry<T: Config> {
-		/// Block number when this deferred dispatch expires
-		pub expire_at: BlockNumberFor<T>,
+		/// Provided block number when this deferred dispatch expires
+		pub expire_at: ProvidedBlockNumberFor<T>,
 		/// Encoded length of the call (for weight calculation)
 		pub call_encoded_len: u32,
 	}
@@ -285,13 +305,13 @@ pub mod pallet {
 
 			Self::clean_and_dispatch(
 				call_hash,
-				CallSource::Direct { call: *call, encoded_len: call_len },
+				CallSource::Direct { call, encoded_len: call_len },
 				relayer,
 			)
 		}
 
 		#[pallet::call_index(4)]
-		#[pallet::weight(100)]
+		#[pallet::weight(T::WeightInfo::remove_deferred_dispatch())]
 		pub fn remove_deferred_dispatch(
 			origin: OriginFor<T>,
 			call_hash: T::Hash,
@@ -316,11 +336,11 @@ pub mod pallet {
 
 impl<T: Config> Pallet<T> {
 	/// Defer the dispatch of a whitelisted call to a future block.
-    ///
-    /// This function stores the call hash for later execution by any signed origin
-    /// before the expiration block. If a preimage is provided, it is uploaded to
-    /// the preimages pallet for retrieval during the actual dispatch.
-    fn defer_dispatch(
+	///
+	/// This function stores the call hash for later execution by any signed origin
+	/// before the expiration block. If a preimage is provided, it is uploaded to
+	/// the preimages pallet for retrieval during the actual dispatch.
+	fn defer_dispatch(
 		call_hash: T::Hash,
 		preimage: Option<Vec<u8>>,
 		call_encoded_len: u32,
@@ -332,7 +352,12 @@ impl<T: Config> Pallet<T> {
 		ensure!(!DeferredDispatch::<T>::contains_key(call_hash), Error::<T>::AlreadyDeferred);
 
 		if let Some(ref preimage_data) = preimage {
-			let _ = T::Preimages::note(preimage_data.into());
+			if T::Preimages::note(preimage_data.into()).is_err() {
+				// Request is best-effort; even if it "fails" (already requested),
+				// the deferred dispatch entry still exists and can be executed
+				// if someone else provides the preimage
+				let _ = T::Preimages::request(&call_hash);
+			}
 		}
 
 		DeferredDispatch::<T>::insert(call_hash, DeferredEntry { expire_at, call_encoded_len });
@@ -373,7 +398,7 @@ impl<T: Config> Pallet<T> {
 				(call, T::WeightInfo::dispatch_whitelisted_call(encoded_len))
 			},
 			CallSource::Direct { call, encoded_len } => {
-				(call, T::WeightInfo::dispatch_whitelisted_call_with_preimage(encoded_len))
+				(*call, T::WeightInfo::dispatch_whitelisted_call_with_preimage(encoded_len))
 			},
 		};
 

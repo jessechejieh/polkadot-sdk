@@ -80,7 +80,7 @@ impl pallet_whitelist::Config for Runtime {
 		EnsureXcm<IsVoiceOfBody<Collectives, FellowsBodyId>>,
 	>;
 	type DispatchWhitelistedOrigin = EitherOf<EnsureRoot<Self::AccountId>, WhitelistedCaller>;
-    type DeferredDispatchExpiration = ConstU32<15>;
+    type DeferredDispatchExpiration = ConstU32<{ 15 * MINUTES }>;
     type BlockNumberProvider = RelaychainDataProvider<Runtime>;
 	type Preimages = Preimage;
 }

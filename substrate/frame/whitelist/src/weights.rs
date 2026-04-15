@@ -76,6 +76,7 @@ pub trait WeightInfo {
 	fn remove_whitelisted_call() -> Weight;
 	fn dispatch_whitelisted_call(n: u32, ) -> Weight;
 	fn dispatch_whitelisted_call_with_preimage(n: u32, ) -> Weight;
+    fn remove_deferred_dispatch() -> Weight;
 }
 
 /// Weights for `pallet_whitelist` using the Substrate node and recommended hardware.
@@ -150,6 +151,19 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads(3_u64))
 			.saturating_add(T::DbWeight::get().writes(2_u64))
 	}
+    /// Storage: `Whitelist::DeferredDispatch` (r:1 w:1)
+	/// Proof: `Whitelist::DeferredDispatch` (`max_values`: None, `max_size`: Some(40), added: 2515, mode: `MaxEncodedLen`)
+	/// Storage: `System::Number` (r:1 w:0)
+	/// Proof: `System::Number` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
+	fn remove_deferred_dispatch() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `152`
+		//  Estimated: `3505`
+		// Minimum execution time: 6_000_000 picoseconds.
+		Weight::from_parts(6_410_000, 3505)
+			.saturating_add(T::DbWeight::get().reads(2_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
+	}
 }
 
 // For backwards compatibility and tests.
@@ -222,5 +236,18 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(1_325, 0).saturating_mul(n.into()))
 			.saturating_add(RocksDbWeight::get().reads(3_u64))
 			.saturating_add(RocksDbWeight::get().writes(2_u64))
+	}
+    /// Storage: `Whitelist::DeferredDispatch` (r:1 w:1)
+	/// Proof: `Whitelist::DeferredDispatch` (`max_values`: None, `max_size`: Some(40), added: 2515, mode: `MaxEncodedLen`)
+	/// Storage: `System::Number` (r:1 w:0)
+	/// Proof: `System::Number` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
+	fn remove_deferred_dispatch() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `152`
+		//  Estimated: `3505`
+		// Minimum execution time: 6_000_000 picoseconds.
+		Weight::from_parts(6_410_000, 3505)
+			.saturating_add(RocksDbWeight::get().reads(2_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 }

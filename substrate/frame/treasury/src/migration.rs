@@ -18,15 +18,14 @@
 //! Treasury pallet migrations.
 
 use super::*;
-use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
+use alloc::{collections::BTreeSet, vec::Vec};
 use core::marker::PhantomData;
 use frame_support::{defensive, traits::OnRuntimeUpgrade};
 
 /// The log target for this pallet.
 const LOG_TARGET: &str = "runtime::treasury";
 
-pub mod cleanup_proposals {
+mod cleanup_proposals {
 	use super::*;
 
 	/// Migration to cleanup unapproved proposals to return the bonds back to the proposers.
@@ -138,7 +137,7 @@ pub mod cleanup_proposals {
 /// This migration identifies all pending/failed spends that have not yet expired,
 /// groups them by asset kind, sorts them by valid_from (FIFO order),
 /// and initializes the PayoutQueue and NextPayout for each asset kind.
-pub mod migrate_to_ordered_payouts {
+mod migrate_to_ordered_payouts {
 	use super::*;
 
 	/// Migration to initialize the payout queue for existing spends.
@@ -152,11 +151,13 @@ pub mod migrate_to_ordered_payouts {
 			);
 
 			let now = T::BlockNumberProvider::current_block_number();
+			let mut total_spends_read: u64 = 0;
 
 			// Collect all pending/failed spends that haven't expired.
 			let mut spends_vec: Vec<(T::AssetKind, SpendIndex, BlockNumberFor<T, I>)> = Vec::new();
 
 			for (index, spend) in Spends::<T, I>::iter() {
+				total_spends_read += 1;
 				match spend.status {
 					PaymentState::Pending | PaymentState::Failed => {
 						// Only include spends that haven't expired
@@ -250,7 +251,6 @@ pub mod migrate_to_ordered_payouts {
 					}
 				}
 
-				// Set the payout queue
 				PayoutQueue::<T, I>::insert(&asset_kind, queue);
 			}
 
@@ -261,8 +261,8 @@ pub mod migrate_to_ordered_payouts {
 				total_assets_processed,
 			);
 
-			let reads = total_spends_processed as u64 + 1; // Spends reads + block number read
-			let writes = total_assets_processed as u64 * 2; // PayoutQueue + NextPayout per asset
+			let reads = total_spends_read + 1;
+			let writes = total_assets_processed as u64 * 2;
 			T::DbWeight::get().reads_writes(reads, writes)
 		}
 
@@ -319,8 +319,7 @@ pub mod migrate_to_ordered_payouts {
 					ensure!(spend.asset_kind == asset_kind, "Spend in queue has wrong asset kind");
 				}
 
-				// Verify NextPayout is NOT in queue (they are separate storage items in Solution
-				// 1.2)
+				// Verify NextPayout is NOT in queue
 				if let Some((next_index, _)) = NextPayout::<T, I>::get(&asset_kind) {
 					ensure!(
 						!queue.iter().any(|(idx, _)| *idx == next_index),
@@ -330,6 +329,258 @@ pub mod migrate_to_ordered_payouts {
 			}
 
 			Ok(())
+		}
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use super::*;
+		use crate::{
+			pallet::Spends,
+			tests::{ExtBuilder, System, Test},
+		};
+		use frame_support::traits::OnRuntimeUpgrade;
+
+		#[cfg(feature = "try-runtime")]
+		use frame_support::assert_ok;
+
+		/// Helper to directly insert a spend into storage
+		fn insert_spend(
+			index: SpendIndex,
+			asset_kind: u32,
+			amount: u64,
+			beneficiary: u128,
+			valid_from: u64,
+			expire_at: u64,
+			status: PaymentState<u64>,
+		) {
+			let spend = crate::SpendStatus {
+				asset_kind,
+				amount,
+				beneficiary,
+				valid_from,
+				expire_at,
+				status,
+			};
+
+			crate::pallet::Spends::<Test>::insert(index, spend);
+
+			let current = crate::pallet::SpendCount::<Test>::get();
+
+			if index >= current {
+				crate::pallet::SpendCount::<Test>::put(index + 1);
+			}
+		}
+
+		#[test]
+		fn migration_empty_state() {
+			ExtBuilder::default().build().execute_with(|| {
+				System::set_block_number(100);
+				assert_eq!(Spends::<Test>::iter().count(), 0);
+
+				let weight = MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+
+				assert!(weight.ref_time() == 0);
+				assert!(NextPayout::<Test>::iter().next().is_none());
+				assert!(PayoutQueue::<Test>::iter().next().is_none());
+			});
+		}
+
+		#[test]
+		fn migration_skips_attempted_spends() {
+			ExtBuilder::default().build().execute_with(|| {
+				System::set_block_number(100);
+
+				insert_spend(0, 1, 100, 1000, 50, 200, PaymentState::Attempted { id: 123u64 });
+
+				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+
+				assert!(NextPayout::<Test>::get(1u32).is_none());
+				assert_eq!(PayoutQueue::<Test>::get(1u32).len(), 0);
+			});
+		}
+
+		#[test]
+		fn migration_skips_expired_spends() {
+			ExtBuilder::default().build().execute_with(|| {
+				System::set_block_number(100);
+
+				// expire_at (99) < now (100)
+				insert_spend(0, 1, 100, 1000, 50, 99, PaymentState::Pending);
+
+				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+
+				assert!(NextPayout::<Test>::get(1u32).is_none());
+			});
+		}
+
+		#[test]
+		fn migration_groups_by_asset() {
+			ExtBuilder::default().build().execute_with(|| {
+				System::set_block_number(100);
+
+				// Asset 1: 2 spends
+				insert_spend(0, 1, 100, 1000, 50, 200, PaymentState::Pending);
+				insert_spend(1, 1, 200, 1001, 60, 200, PaymentState::Pending);
+				// Asset 2: 1 spend
+				insert_spend(2, 2, 300, 1002, 40, 200, PaymentState::Failed);
+
+				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+
+				// Asset 1: First spend is NextPayout
+				let (next_idx, expire_at) = NextPayout::<Test>::get(1u32).unwrap();
+				assert_eq!(next_idx, 0);
+				assert_eq!(expire_at, 102); // 100 + OrderExpirationPeriod(2)
+
+				// Asset 1 queue: spend 1
+				assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(1, 60)]);
+
+				// Asset 2: Spend 2 is NextPayout
+				assert_eq!(NextPayout::<Test>::get(2u32).map(|(idx, _)| idx), Some(2));
+				assert_eq!(PayoutQueue::<Test>::get(2u32).len(), 0);
+			});
+		}
+
+		#[test]
+		fn migration_sorts_by_valid_from() {
+			ExtBuilder::default().build().execute_with(|| {
+				System::set_block_number(100);
+
+				// Insert out of order
+				insert_spend(0, 1, 100, 1000, 100, 200, PaymentState::Pending); // latest
+				insert_spend(1, 1, 100, 1001, 50, 200, PaymentState::Pending); // earliest
+				insert_spend(2, 1, 100, 1002, 75, 200, PaymentState::Pending); // middle
+
+				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+
+				// Sorted: 1 (50), 2 (75), 0 (100)
+				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+				assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(2, 75), (0, 100)]);
+			});
+		}
+
+		#[test]
+		fn migration_tie_breaks_by_index() {
+			ExtBuilder::default().build().execute_with(|| {
+				System::set_block_number(100);
+
+				// Same valid_from, different indices (inserted out of order)
+				insert_spend(5, 1, 100, 1000, 50, 200, PaymentState::Pending);
+				insert_spend(3, 1, 100, 1001, 50, 200, PaymentState::Pending);
+				insert_spend(4, 1, 100, 1002, 50, 200, PaymentState::Pending);
+
+				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+
+				// Sorted by index: 3, 4, 5
+				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(3));
+				assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(4, 50), (5, 50)]);
+			});
+		}
+
+		#[test]
+		fn migration_respects_max_queue() {
+			ExtBuilder::default().build().execute_with(|| {
+				System::set_block_number(100);
+
+				// Create 105 spends (MaxQueuedSpends = 100)
+				for i in 0..105u32 {
+					insert_spend(
+						i,
+						1,
+						100,
+						1000 + i as u128,
+						50 + i as u64,
+						200,
+						PaymentState::Pending,
+					);
+				}
+
+				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+
+				// NextPayout is index 0
+				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+
+				// Queue capped at 100
+				let queue = PayoutQueue::<Test>::get(1u32);
+				assert_eq!(queue.len(), 100);
+				assert_eq!(queue[0].0, 1);
+				assert_eq!(queue[99].0, 100);
+			});
+		}
+
+		#[test]
+		fn migration_mixed_statuses() {
+			ExtBuilder::default().build().execute_with(|| {
+				System::set_block_number(100);
+
+				insert_spend(0, 1, 100, 1000, 50, 200, PaymentState::Pending);
+				insert_spend(1, 1, 100, 1001, 51, 200, PaymentState::Failed);
+				insert_spend(2, 1, 100, 1002, 52, 200, PaymentState::Attempted { id: 1 });
+				insert_spend(3, 1, 100, 1003, 53, 99, PaymentState::Pending); // expired
+
+				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+
+				// Only 0 and 1 in queue
+				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+				assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(1, 51)]);
+			});
+		}
+
+		#[test]
+		#[cfg(feature = "try-runtime")]
+		fn pre_upgrade_captures_state() {
+			ExtBuilder::default().build().execute_with(|| {
+				insert_spend(0, 1, 100, 1000, 50, 200, PaymentState::Pending);
+				insert_spend(1, 1, 100, 1001, 51, 200, PaymentState::Failed);
+				insert_spend(2, 1, 100, 1002, 52, 200, PaymentState::Attempted { id: 1 });
+
+				let state = MigrateToOrderedPayouts::<Test>::pre_upgrade().unwrap();
+				let decoded: Vec<(u32, u32)> = Vec::decode(&mut &state[..]).unwrap();
+
+				assert_eq!(decoded.len(), 2);
+				assert!(decoded.contains(&(1, 0)));
+				assert!(decoded.contains(&(1, 1)));
+			});
+		}
+
+		#[test]
+		#[cfg(feature = "try-runtime")]
+		fn post_upgrade_validates() {
+			ExtBuilder::default().build().execute_with(|| {
+				let pre_state = {
+					let mut spends = Vec::new();
+					spends.push((1u32, 0u32));
+					spends.push((1u32, 1u32));
+					spends.encode()
+				};
+
+				System::set_block_number(100);
+				insert_spend(0, 1, 100, 1000, 50, 200, PaymentState::Pending);
+				insert_spend(1, 1, 100, 1001, 51, 200, PaymentState::Pending);
+				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+
+				assert_ok!(MigrateToOrderedPayouts::<Test>::post_upgrade(pre_state));
+			});
+		}
+
+		#[test]
+		#[cfg(feature = "try-runtime")]
+		fn post_upgrade_detects_invalid() {
+			ExtBuilder::default().build().execute_with(|| {
+				System::set_block_number(100);
+
+				// Create invalid state: NextPayout in queue
+				insert_spend(0, 1, 100, 1000, 50, 200, PaymentState::Pending);
+				NextPayout::<Test>::insert(1u32, (0u32, 102u64));
+
+				let bounded_vec: BoundedVec<(u32, u64), crate::tests::MaxQueuedSpends> =
+					vec![(0u32, 50u64)].try_into().unwrap();
+				crate::pallet::PayoutQueue::<Test>::insert(1u32, bounded_vec);
+
+				let pre_state = vec![(1u32, 0u32)].encode();
+
+				assert!(MigrateToOrderedPayouts::<Test>::post_upgrade(pre_state).is_err());
+			});
 		}
 	}
 }

@@ -2101,6 +2101,7 @@ pub mod migrations {
 		>,
 		// permanent
 		pallet_xcm::migration::MigrateToLatestXcmVersion<Runtime>,
+        pallet_treasury::migration::MigrateToOrderedPayouts<Runtime>,
 	);
 }
 

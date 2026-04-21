@@ -119,6 +119,8 @@ fn test_whitelist_call_and_execute() {
 
 		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
 
+		assert!(Preimage::is_requested(&call_hash));
+
 		// Use signed Origin after dispatch has been defeered
 		assert_noop!(
 			Whitelist::dispatch_whitelisted_call(
@@ -143,8 +145,6 @@ fn test_whitelist_call_and_execute() {
 
 		assert_ok!(Preimage::note(encoded_call.into()));
 
-		assert!(Preimage::is_requested(&call_hash));
-
 		assert_noop!(
 			Whitelist::dispatch_whitelisted_call(
 				RuntimeOrigin::root(),
@@ -162,24 +162,27 @@ fn test_whitelist_call_and_execute() {
 			call_weight
 		));
 
-        let post_dispatch_events = events();
+		let post_dispatch_events = events();
 
-        let call_whitelisted = post_dispatch_events.iter().any(|event| {
-            matches!(event, Event::<Test>::CallWhitelisted { call_hash: hash } if hash == &call_hash)
-        });
+		assert!(
+			post_dispatch_events.iter().any(|event| {
+				matches!(event, Event::<Test>::CallWhitelisted { call_hash: hash } if hash == &call_hash)
+			}),
+			"Expected CallWhitelisted event"
+		);
 
-        let dispatched_ok = post_dispatch_events.iter().any(|event| {
-            matches!(
-                event,
-                Event::<Test>::WhitelistedCallDispatched {
-                    call_hash: hash,
-                    result: Ok(_)
-                } if hash == &call_hash
-            )
-        });
-
-        assert!(call_whitelisted, "Expected CallWhitelisted event");
-        assert!(dispatched_ok, "Expected WhitelistedCallDispatched with Ok result");
+		assert!(
+			post_dispatch_events.iter().any(|event| {
+				matches!(
+					event,
+					Event::<Test>::WhitelistedCallDispatched {
+						call_hash: hash,
+						result: Ok(_)
+					} if hash == &call_hash
+				)
+			}),
+			"Expected WhitelistedCallDispatched with Ok result"
+		);
 
 		assert!(!Preimage::is_requested(&call_hash));
 	});
@@ -218,6 +221,7 @@ fn test_whitelist_call_and_execute_without_note_preimage() {
 		let call_hash = <Test as frame_system::Config>::Hashing::hash_of(&call);
 
 		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
+
 		assert!(Preimage::is_requested(&call_hash));
 
 		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
@@ -241,6 +245,8 @@ fn test_whitelist_call_and_execute_without_note_preimage() {
 			call.clone()
 		));
 
+		assert!(Preimage::is_requested(&call_hash));
+
 		assert!(events().iter().any(|event| {
 			match event {
 				Event::<Test>::DispatchDeferred { call_hash: hash } => hash == &call_hash,
@@ -248,12 +254,32 @@ fn test_whitelist_call_and_execute_without_note_preimage() {
 			}
 		}));
 
-		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
-
 		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
 			RuntimeOrigin::signed(1),
 			call
 		));
+
+		let emitted_events = events();
+
+		assert!(emitted_events.iter().any(|event| {
+			matches!(
+				event,
+				Event::<Test>::WhitelistedCallDispatched {
+					call_hash: hash,
+					result: Ok(PostDispatchInfo { actual_weight: None, pays_fee: Pays::Yes })
+				} if hash == &call_hash
+			)
+		}));
+
+		assert!(emitted_events.iter().any(|event| {
+			matches!(
+				event,
+				Event::<Test>::DeferredDispatchExecuted { call_hash: hash, who: 1 }
+				if hash == &call_hash
+			)
+		}));
+
+		assert!(!Preimage::is_requested(&call_hash));
 	});
 }
 
@@ -402,8 +428,7 @@ fn test_deferred_dispatch_expires_after_block_delay() {
 			crate::Error::<Test>::DeferredDispatchExpired
 		);
 
-		// Root can still dispatch after expiry, no expiry check for root because the call is
-		// whitelisted on the same block as it is being called.
+		// Root can still dispatch directly, provided call has been whitelisted
 		assert_ok!(Whitelist::dispatch_whitelisted_call(
 			RuntimeOrigin::root(),
 			call_hash,
@@ -442,6 +467,7 @@ fn test_deferred_dispatch_with_signed_origin() {
 			value: 100,
 		});
 
+		// Fund source account balance
 		assert_ok!(Balances::force_set_balance(RuntimeOrigin::root(), 1, 1000));
 
 		let balance_call_hash = <Test as frame_system::Config>::Hashing::hash_of(&balance_call);
@@ -480,9 +506,9 @@ fn test_deferred_dispatch_with_signed_origin() {
 
 		assert!(Preimage::is_requested(&balance_call_hash));
 
-		// Subsequent call to the same hash can be from a signed origin before the dispatch expiry
+		// Subsequent call to the same hash can be from any signed origin before the dispatch expiry
 		assert_ok!(Whitelist::dispatch_whitelisted_call(
-			RuntimeOrigin::signed(1),
+			RuntimeOrigin::signed(4),
 			balance_call_hash,
 			balance_call_len,
 			balance_call_weight,
@@ -505,7 +531,7 @@ fn test_deferred_dispatch_with_signed_origin() {
 		assert!(post_dispatch_events.iter().any(|event| {
 			matches!(
 				event,
-				Event::<Test>::DeferredDispatchExecuted { call_hash: hash, who: 1 }
+				Event::<Test>::DeferredDispatchExecuted { call_hash: hash, who: 4 }
 				if hash == &balance_call_hash
 			)
 		}));

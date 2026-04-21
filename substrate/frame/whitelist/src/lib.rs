@@ -295,10 +295,6 @@ pub mod pallet {
 					let _ = T::Preimages::fetch(&call_hash, Some(call_len))
 						.map_err(|_| Error::<T>::UnavailablePreImage)?;
 
-					ensure!(
-						WhitelistedCall::<T>::contains_key(call_hash),
-						Error::<T>::CallIsNotWhitelisted
-					);
 					Some(who)
 				},
 			};
@@ -353,9 +349,8 @@ impl<T: Config> Pallet<T> {
 
 		if let Some(ref preimage_data) = preimage {
 			if T::Preimages::note(preimage_data.into()).is_err() {
-				// Request is best-effort; even if it "fails" (already requested),
-				// the deferred dispatch entry still exists and can be executed
-				// if someone else provides the preimage
+				// If noting fails (e.g., already in storage),
+				// fallback to requesting (reference counting)
 				let _ = T::Preimages::request(&call_hash);
 			}
 		}

@@ -49,7 +49,6 @@ use frame::{
 	traits::{QueryPreimage, StorePreimage},
 };
 use scale_info::TypeInfo;
-use sp_runtime::traits::BlockNumberProvider;
 
 pub use pallet::*;
 

@@ -41,10 +41,10 @@ async fn build_network_config() -> Result<NetworkConfig, anyhow::Error> {
 						}
 					}
 				}))
-				// Have to set a `with_node` outside of the loop below, so that `r` has the right
+				// Have to set a `with_validator` outside of the loop below, so that `r` has the right
 				// type.
-				.with_node(|node| node.with_name("validator-0"));
-			(1..9).fold(r, |acc, i| acc.with_node(|node| node.with_name(&format!("validator-{i}"))))
+				.with_validator(|node| node.with_name("validator-0"));
+			(1..9).fold(r, |acc, i| acc.with_validator(|node| node.with_name(&format!("validator-{i}"))))
 		})
 		.with_parachain(|p| {
 			p.with_id(PARA_ID)
@@ -86,14 +86,14 @@ async fn elastic_scaling_asset_hub_westend() -> Result<(), anyhow::Error> {
 
 	assign_cores(&relay_client, PARA_ID, vec![0]).await?;
 
-	assert_para_throughput(&relay_client, 10, [(ParaId::from(PARA_ID), 3..18)]).await?;
+	assert_para_throughput(&relay_client, 10, [(ParaId::from(PARA_ID), 3..18)], []).await?;
 
 	// 1 core is assigned by default, we are assigning 2 more cores: 0 and 1.
 	assign_cores(&relay_client, PARA_ID, vec![1]).await?;
 
 	log::info!("Ensure elastic scaling works, 3 blocks should be produced in each 6s slot");
 
-	assert_para_throughput(&relay_client, 20, [(ParaId::from(PARA_ID), 50..61)]).await?;
+	assert_para_throughput(&relay_client, 20, [(ParaId::from(PARA_ID), 50..61)], []).await?;
 
 	log::info!("Test finished successfully.");
 

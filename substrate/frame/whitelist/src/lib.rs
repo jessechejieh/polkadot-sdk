@@ -98,9 +98,6 @@ pub mod pallet {
 		type DeferredDispatchExpiration: Get<ProvidedBlockNumberFor<Self>>;
 
 		/// Provider for the block number.
-		///
-		/// For detailed documentation on usage patterns, see:
-		/// - [`pallet_proxy::Config::BlockNumberProvider`]
 		type BlockNumberProvider: BlockNumberProvider;
 
 		/// The weight information for this pallet.
@@ -227,25 +224,12 @@ pub mod pallet {
 					}
 					None
 				},
-				Err(dispatch_origin) => {
-					let who = ensure_signed(dispatch_origin)?;
-
-					let deferred_dispatch = DeferredDispatch::<T>::get(call_hash)
-						.ok_or(Error::<T>::DeferredDispatchNotFound)?;
-
-					ensure!(
-						T::BlockNumberProvider::current_block_number() <
-							deferred_dispatch.expire_at,
-						Error::<T>::DeferredDispatchExpired
-					);
-
-					ensure!(
-						WhitelistedCall::<T>::contains_key(call_hash),
-						Error::<T>::CallIsNotWhitelisted
-					);
-
-					Some(who)
-				},
+				Err(dispatch_origin) => Some(Self::ensure_signed_deferred_dispatch(
+					dispatch_origin,
+					call_hash,
+					None,
+					true,
+				)?),
 			};
 
 			Self::clean_and_dispatch(
@@ -279,23 +263,12 @@ pub mod pallet {
 					}
 					None
 				},
-				Err(dispatch_origin) => {
-					let who = ensure_signed(dispatch_origin)?;
-
-					let deferred_dispatch = DeferredDispatch::<T>::get(call_hash)
-						.ok_or(Error::<T>::DeferredDispatchNotFound)?;
-
-					ensure!(
-						T::BlockNumberProvider::current_block_number() <
-							deferred_dispatch.expire_at,
-						Error::<T>::DeferredDispatchExpired
-					);
-
-					let _ = T::Preimages::fetch(&call_hash, Some(call_len))
-						.map_err(|_| Error::<T>::UnavailablePreImage)?;
-
-					Some(who)
-				},
+				Err(dispatch_origin) => Some(Self::ensure_signed_deferred_dispatch(
+					dispatch_origin,
+					call_hash,
+					Some(call_len),
+					false,
+				)?),
 			};
 
 			Self::clean_and_dispatch(
@@ -363,6 +336,46 @@ impl<T: Config> Pallet<T> {
 			None => T::WeightInfo::dispatch_whitelisted_call(call_encoded_len),
 		})
 		.into())
+	}
+
+	/// Deferred dispatch sanity check.
+	///
+	/// Validates that:
+	/// - The origin is a signed account.
+	/// - A deferred dispatch entry exists for the call hash.
+	/// - The deferred dispatch has not yet expired.
+	///
+	/// If `check_whitelist` is `true`, verifies the call is still whitelisted.
+	/// If `check_whitelist` is `false`, verifies the preimage is available.
+	///
+	/// Returns the signed account ID if all checks pass.
+	fn ensure_signed_deferred_dispatch(
+		origin: T::RuntimeOrigin,
+		call_hash: T::Hash,
+		call_encoded_len: Option<u32>,
+		check_whitelist: bool,
+	) -> Result<T::AccountId, DispatchError> {
+		let who = ensure_signed(origin)?;
+
+		let entry =
+			DeferredDispatch::<T>::get(call_hash).ok_or(Error::<T>::DeferredDispatchNotFound)?;
+
+		ensure!(
+			T::BlockNumberProvider::current_block_number() < entry.expire_at,
+			Error::<T>::DeferredDispatchExpired
+		);
+
+		if check_whitelist {
+			ensure!(
+				WhitelistedCall::<T>::contains_key(call_hash),
+				Error::<T>::CallIsNotWhitelisted
+			);
+		} else {
+			let _ = T::Preimages::fetch(&call_hash, call_encoded_len)
+				.map_err(|_| Error::<T>::UnavailablePreImage)?;
+		}
+
+		Ok(who)
 	}
 
 	/// Clean whitelisting/preimage, dispatch call, and handle weight calculation.

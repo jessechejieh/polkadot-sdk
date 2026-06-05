@@ -15,6 +15,7 @@
 // along with Polkadot.  If not, see <http://www.gnu.org/licenses/>.
 
 use super::{Error, IsParachainNode, Registry};
+use polkadot_collator_protocol::ReputationConfig;
 use polkadot_node_subsystem_types::{ChainApiBackend, RuntimeApiSubsystemClient};
 use polkadot_overseer::{DummySubsystem, InitializedOverseerBuilder, SubsystemError};
 use sp_core::traits::SpawnNamed;
@@ -149,6 +150,8 @@ pub struct ExtendedOverseerGenArgs {
 	pub collator_protocol_hold_off: Option<Duration>,
 	/// Use experimental collator protocol
 	pub experimental_collator_protocol: bool,
+	/// Reputation DB config used by experimental collator protocol,
+	pub reputation_config: ReputationConfig,
 }
 
 /// Obtain a prepared validator `Overseer`, that is initialized with all default values.
@@ -186,6 +189,7 @@ pub fn validator_overseer_builder<Spawner, RuntimeClient>(
 		invulnerable_ah_collators,
 		collator_protocol_hold_off,
 		experimental_collator_protocol,
+		reputation_config,
 	}: ExtendedOverseerGenArgs,
 ) -> Result<
 	InitializedOverseerBuilder<
@@ -308,6 +312,9 @@ where
 						ProtocolSide::ValidatorExperimental {
 							keystore: keystore.clone(),
 							metrics: Metrics::register(registry)?,
+							db: parachains_db.clone(),
+							reputation_config,
+							clock: polkadot_node_clock::system_clock(),
 						}
 					} else {
 						ProtocolSide::Validator {
@@ -316,6 +323,7 @@ where
 							metrics: Metrics::register(registry)?,
 							invulnerables: invulnerable_ah_collators,
 							collator_protocol_hold_off,
+							clock: polkadot_node_clock::system_clock(),
 						}
 					}
 				},
@@ -489,6 +497,7 @@ where
 					collator_pair,
 					request_receiver_v2: collation_req_v2_receiver,
 					metrics: Metrics::register(registry)?,
+					clock: polkadot_node_clock::system_clock(),
 				},
 				IsParachainNode::FullNode => ProtocolSide::None,
 			};

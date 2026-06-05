@@ -24,8 +24,8 @@ mod weight;
 mod tests;
 
 use crate::{
-	evm::fees::InfoT, exec::CallResources, storage::ContractInfo, vm::evm::Halt, BalanceOf, Config,
-	Error, ExecConfig, ExecOrigin as Origin, StorageDeposit, LOG_TARGET,
+	BalanceOf, Config, Error, ExecConfig, ExecOrigin as Origin, LOG_TARGET, StorageDeposit,
+	evm::fees::InfoT, exec::CallResources, storage::ContractInfo, vm::evm::Halt,
 };
 
 pub use gas::SignedGas;
@@ -72,6 +72,14 @@ mod private {
 pub type TransactionMeter<T> = ResourceMeter<T, Root>;
 /// The type of resource meter used for an execution frame.
 pub type FrameMeter<T> = ResourceMeter<T, Nested>;
+
+/// Snapshot of a [`ResourceMeter`]'s consumption at a point in time.
+///
+/// Produced by [`ResourceMeter::snapshot`] and consumed by [`ResourceMeter::delta_since`].
+pub struct MeterSnapshot<T: Config> {
+	weight: Weight,
+	gas: SignedGas<T>,
+}
 
 /// Resource meter tracking weight and storage deposit consumption.
 #[derive(DefaultNoBound)]
@@ -447,16 +455,44 @@ impl<T: Config, S: State> ResourceMeter<T, S> {
 
 	/// Get the Ethereum gas that has been consumed during the lifetime of this meter
 	pub fn eth_gas_consumed(&self) -> BalanceOf<T> {
-		let signed_gas = match &self.transaction_limits {
+		self.eth_gas_consumed_signed().to_ethereum_gas().unwrap_or_default()
+	}
+
+	/// Same as [`Self::eth_gas_consumed`] but returns the unrounded [`SignedGas`].
+	///
+	/// Prefer this when computing a delta across two snapshots: subtracting in [`SignedGas`] form
+	/// avoids the double ceil-rounding that [`Self::eth_gas_consumed`] performs at each call.
+	pub fn eth_gas_consumed_signed(&self) -> SignedGas<T> {
+		match &self.transaction_limits {
 			TransactionLimits::EthereumGas { eth_tx_info, .. } => {
 				math::ethereum_execution::eth_gas_consumed(self, eth_tx_info)
 			},
 			TransactionLimits::WeightAndDeposit { .. } => {
 				math::substrate_execution::eth_gas_consumed(self)
 			},
-		};
+		}
+	}
 
-		signed_gas.to_ethereum_gas().unwrap_or_default()
+	/// Take a snapshot of the meter's current consumption for later use with
+	/// [`Self::delta_since`].
+	pub fn snapshot(&self) -> MeterSnapshot<T> {
+		MeterSnapshot { weight: self.weight_consumed(), gas: self.eth_gas_consumed_signed() }
+	}
+
+	/// Ethereum gas and weight consumed since `snapshot` was taken.
+	///
+	/// Gas subtraction happens in [`SignedGas`] form so that the ceil-rounding inside
+	/// `to_ethereum_gas` is applied once to the delta, not to each snapshot.
+	pub fn delta_since(&self, snapshot: &MeterSnapshot<T>) -> (u64, Weight) {
+		let gas = self
+			.eth_gas_consumed_signed()
+			.saturating_sub(&snapshot.gas)
+			.to_ethereum_gas()
+			.unwrap_or_default()
+			.try_into()
+			.unwrap_or(u64::MAX);
+		let weight = self.weight_consumed().saturating_sub(snapshot.weight);
+		(gas, weight)
 	}
 
 	/// Determine and set the new effective weight limit of the weight meter.
@@ -624,6 +660,18 @@ impl<T: Config> FrameMeter<T> {
 		}
 
 		Ok(())
+	}
+
+	/// Apply pending storage changes to a ContractInfo without finalizing the meter.
+	///
+	/// This is used before creating a nested frame to ensure the child frame can see
+	/// the parent's pending storage changes when calculating refunds. This fixes the issue
+	/// where storage deposit refunds fail in subframes because the parent's pending
+	/// charges haven't been committed to ContractInfo yet.
+	///
+	/// See: <https://github.com/paritytech/contract-issues/issues/213>
+	pub fn apply_pending_storage_changes(&self, info: &mut ContractInfo<T>) {
+		self.deposit.apply_pending_changes_to_contract(info);
 	}
 }
 

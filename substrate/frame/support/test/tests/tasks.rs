@@ -172,6 +172,7 @@ fn task_config_is_auto_bound_to_runtime_task() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn do_task_unsigned_validation_rejects_external_source() {
 	new_test_ext().execute_with(|| {
 		use frame_support::pallet_prelude::{

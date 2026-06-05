@@ -1,0 +1,18 @@
+error[E0277]: the trait bound `RuntimeTask: From<pallet_not_in_runtime::Task<Runtime>>` is not satisfied
+  --> tests/pallet_ui/task_missing_runtime_task_bound.rs:90:6
+   |
+90 | impl pallet_not_in_runtime::Config for Runtime {}
+   |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `From<pallet_not_in_runtime::Task<Runtime>>` is not implemented for `RuntimeTask`
+   |
+   = help: the trait `From<pallet_not_in_runtime::Task<Runtime>>` is not implemented for `RuntimeTask`
+           but trait `From<pallet_in_runtime::Task<Runtime>>` is implemented for it
+   = help: for that trait implementation, expected `pallet_in_runtime::Task<Runtime>`, found `pallet_not_in_runtime::Task<Runtime>`
+note: required by a bound in `pallet_not_in_runtime::Config`
+  --> tests/pallet_ui/task_missing_runtime_task_bound.rs:50:1
+   |
+50 | #[frame_support::pallet(dev_mode)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Config`
+...
+55 |     pub trait Config: frame_system::Config {}
+   |               ------ required by a bound in this trait
+   = note: this error originates in the attribute macro `frame_support::pallet` (in Nightly builds, run with -Z macro-backtrace for more info)

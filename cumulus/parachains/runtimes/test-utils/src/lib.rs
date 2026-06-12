@@ -46,7 +46,7 @@ use xcm::{
 	prelude::*,
 	VersionedXcm, MAX_XCM_DECODE_DEPTH,
 };
-use xcm_executor::{traits::TransactAsset, AssetsInHolding};
+use xcm_executor::traits::TransactAsset;
 
 pub mod test_cases;
 
@@ -403,7 +403,7 @@ impl<XcmConfig: xcm_executor::Config, AllPalletsWithoutSystem>
 		from: Location,
 		to: Location,
 		(asset, amount): (Location, u128),
-	) -> Result<AssetsInHolding, XcmError> {
+	) -> Result<Asset, XcmError> {
 		<XcmConfig::AssetTransactor as TransactAsset>::transfer_asset(
 			&Asset { id: AssetId(asset), fun: Fungible(amount) },
 			&from,
@@ -763,7 +763,7 @@ impl<HrmpChannelSource: cumulus_primitives_core::XcmpMessageSource, AllPalletsWi
 	RuntimeHelper<HrmpChannelSource, AllPalletsWithoutSystem>
 {
 	pub fn take_xcm(sent_to_para_id: ParaId) -> Option<VersionedXcm<()>> {
-		match HrmpChannelSource::take_outbound_messages(10)[..] {
+		match HrmpChannelSource::take_outbound_messages(10, &[])[..] {
 			[(para_id, ref mut xcm_message_data)] if para_id.eq(&sent_to_para_id.into()) => {
 				let mut xcm_message_data = &xcm_message_data[..];
 				// decode

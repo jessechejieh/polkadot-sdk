@@ -100,6 +100,20 @@ fn assert_last_event<T: Config<I>, I: 'static>(generic_event: <T as Config<I>>::
 	frame_system::Pallet::<T>::assert_last_event(generic_event.into());
 }
 
+// Fill the payout queue for `asset_kind` with `n` entries so the benchmarked call hits the
+// worst case: a full scan over (and re-encode of) a queue of up to `MaxQueuedSpends` entries.
+// The seeded indices are offset to avoid colliding with spends created by the benchmark and
+// use an order key of zero so that a subsequent sorted insert scans the entire queue.
+fn fill_payout_queue<T: Config<I>, I: 'static>(asset_kind: T::AssetKind, n: u32) {
+	let order_key = BlockNumberFor::<T, I>::zero();
+	let queue: BoundedVec<_, T::MaxQueuedSpends> = (0..n)
+		.map(|i| (i + 1_000_000, order_key))
+		.collect::<alloc::vec::Vec<_>>()
+		.try_into()
+		.expect("n is at most MaxQueuedSpends; qed");
+	PayoutQueue::<T, I>::insert(asset_kind, queue);
+}
+
 // Create the arguments for the `spend` dispatchable.
 fn create_spend_arguments<T: Config<I>, I: 'static>(
 	seed: u32,
@@ -188,6 +202,13 @@ mod benchmarks {
 		let (asset_kind, amount, beneficiary, beneficiary_lookup) =
 			create_spend_arguments::<T, _>(SEED);
 		T::BalanceConverter::ensure_successful(asset_kind.clone());
+
+		// Worst case: `NextPayout` is already occupied and the new spend is inserted into an
+		// almost full payout queue, scanning all existing entries.
+		let now = T::BlockNumberProvider::current_block_number();
+		let order_expire_at = now.saturating_add(T::OrderExpirationPeriod::get());
+		NextPayout::<T, I>::insert(asset_kind.clone(), (1_000_000u32, order_expire_at));
+		fill_payout_queue::<T, I>(asset_kind.clone(), T::MaxQueuedSpends::get().saturating_sub(1));
 
 		#[extrinsic_call]
 		_(
@@ -294,6 +315,10 @@ mod benchmarks {
 			false
 		};
 
+		// Worst case: removing the spend promotes the next entry from a full payout queue.
+		let (asset_kind, ..) = create_spend_arguments::<T, _>(SEED);
+		fill_payout_queue::<T, I>(asset_kind, T::MaxQueuedSpends::get());
+
 		#[block]
 		{
 			let res =
@@ -334,6 +359,9 @@ mod benchmarks {
 
 		let origin =
 			T::RejectOrigin::try_successful_origin().map_err(|_| BenchmarkError::Weightless)?;
+
+		// Worst case: voiding the spend promotes the next entry from a full payout queue.
+		fill_payout_queue::<T, I>(asset_kind.clone(), T::MaxQueuedSpends::get());
 
 		#[block]
 		{

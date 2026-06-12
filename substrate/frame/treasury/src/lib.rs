@@ -75,13 +75,14 @@
 //! spends from draining the treasury before larger, earlier-approved spends can be paid.
 //!
 //! When a spend is approved via the `spend` call, it is automatically inserted into the payout
-//! queue for its asset kind in sorted order by `valid_from`. Spends are then paid out in order
-//! via the `payout` call, which only processes the spend at the head of the queue for that
-//! asset kind.
+//! queue for its asset kind, sorted by an order key — the spend's `valid_from` for newly
+//! inserted spends. Spends are then paid out in order via the `payout` call, which only
+//! processes the spend at the head of the queue for that asset kind.
 //!
 //! If a spend at the head of the queue cannot be paid out (e.g., due to insufficient funds),
 //! its order will expire after [`Config::OrderExpirationPeriod`] blocks. The `check_status` call
-//! will then rotate it to the back of the queue, allowing other spends of the same asset kind
+//! will then rotate it back into the queue with the current block number as its order key,
+//! placing it behind every already-mature spend and allowing other spends of the same asset kind
 //! to be processed.
 //!
 //! Payout ordering is managed independently per asset kind - a spend of one asset cannot block
@@ -393,7 +394,10 @@ pub mod pallet {
 		StorageMap<_, Twox64Concat, T::AssetKind, (SpendIndex, BlockNumberFor<T, I>), OptionQuery>;
 
 	/// The queue of spends in payout order for each asset kind.
-	/// Each entry contains (spend_index, valid_from) for sorting and maturity checking.
+	///
+	/// Each entry contains `(spend_index, order_key)` and the queue is sorted by the order key.
+	/// The order key is the spend's `valid_from` for newly inserted spends and the block number
+	/// of the rotation for spends that were rotated to the back after their order expired.
 	#[pallet::storage]
 	pub type PayoutQueue<T: Config<I>, I: 'static = ()> = StorageMap<
 		_,
@@ -684,8 +688,9 @@ pub mod pallet {
 		/// the [`Config::PayoutPeriod`].
 		///
 		/// The spend is automatically inserted into the payout queue for its asset kind in sorted
-		/// order by `valid_from`. If there is no current `NextPayout` for this asset kind, the
-		/// spend becomes the `NextPayout` with an expiration of `now + OrderExpirationPeriod`.
+		/// order by its order key (`valid_from` for new spends). If there is no current
+		/// `NextPayout` for this asset kind, the spend becomes the `NextPayout` with an
+		/// expiration of `max(now, valid_from) + OrderExpirationPeriod`.
 		///
 		/// ### Parameters
 		/// - `asset_kind`: An indicator of the specific asset class to be spent.
@@ -1003,8 +1008,10 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 		Approvals::<T, I>::get()
 	}
 
-	/// Insert a spend into the payout queue for the given asset kind in sorted order by valid_from.
-	/// If there is no NextPayout for this asset kind, the spend becomes the NextPayout.
+	/// Insert a newly approved spend into the payout queue for the given asset kind, keeping the
+	/// queue sorted by order key. For newly inserted spends the order key is the spend's
+	/// `valid_from`. If there is no NextPayout for this asset kind, the spend becomes the
+	/// NextPayout instead.
 	fn insert_into_payout_queue(
 		asset_kind: T::AssetKind,
 		index: SpendIndex,
@@ -1015,9 +1022,11 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 			// There's already a NextPayout, add to queue in sorted order
 			let mut queue = PayoutQueue::<T, I>::get(&asset_kind);
 
-			// Find the correct position to insert (maintain sorted order by valid_from)
-			let insert_pos =
-				queue.iter().position(|(_, vf)| *vf > valid_from).unwrap_or(queue.len());
+			// Find the correct position to insert (maintain sorted order by order key)
+			let insert_pos = queue
+				.iter()
+				.position(|(_, order_key)| *order_key > valid_from)
+				.unwrap_or(queue.len());
 
 			// Insert at the found position
 			if queue.try_insert(insert_pos, (index, valid_from)).is_err() {
@@ -1026,9 +1035,10 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 
 			PayoutQueue::<T, I>::insert(&asset_kind, queue);
 		} else {
-			// No NextPayout for this asset kind, set this as NextPayout
+			// No NextPayout for this asset kind, set this as NextPayout. The order only starts
+			// counting down once the spend is mature.
 			let now = T::BlockNumberProvider::current_block_number();
-			let expire_at = now.saturating_add(T::OrderExpirationPeriod::get());
+			let expire_at = now.max(valid_from).saturating_add(T::OrderExpirationPeriod::get());
 			NextPayout::<T, I>::insert(&asset_kind, (index, expire_at));
 		}
 
@@ -1044,10 +1054,13 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 				let mut queue = PayoutQueue::<T, I>::get(asset_kind);
 
 				// Check what to promote BEFORE removing
-				if let Some(&(new_next_index, _)) = queue.first() {
-					// Promote to NextPayout
+				if let Some(&(new_next_index, order_key)) = queue.first() {
+					// Promote to NextPayout. The order only starts counting down once the
+					// promoted spend is mature (its order key is `valid_from` for fresh entries
+					// and is never in the future for rotated ones).
 					let now = T::BlockNumberProvider::current_block_number();
-					let new_expire_at = now.saturating_add(T::OrderExpirationPeriod::get());
+					let new_expire_at =
+						now.max(order_key).saturating_add(T::OrderExpirationPeriod::get());
 					NextPayout::<T, I>::insert(asset_kind, (new_next_index, new_expire_at));
 
 					// Remove it from queue
@@ -1069,22 +1082,26 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 	}
 
 	/// Rotate the payout queue for the given asset kind when the current order expires.
-	/// Moves the current NextPayout to the back of the queue and promotes the next entry.
+	/// Re-inserts the current NextPayout into the queue with an order key of `now`, keeping the
+	/// queue sorted by order key, and promotes the next entry.
 	fn rotate_payout_queue(asset_kind: &T::AssetKind) -> DispatchResult {
 		let (current_index, _) =
 			NextPayout::<T, I>::get(asset_kind).ok_or(Error::<T, I>::NotNextPayout)?;
 		let mut queue = PayoutQueue::<T, I>::get(asset_kind);
+		let now = T::BlockNumberProvider::current_block_number();
 
-		// Push the expired spend to the back of the queue
-		let spend = Spends::<T, I>::get(current_index).ok_or(Error::<T, I>::InvalidIndex)?;
+		// Re-insert the expired spend with `now` as its order key, keeping the queue sorted.
+		// Using `now` (rather than the spend's `valid_from`) sends the rotated spend behind
+		// every entry that is already mature, while preserving the sort order.
+		let insert_pos =
+			queue.iter().position(|(_, order_key)| *order_key > now).unwrap_or(queue.len());
 		queue
-			.try_push((current_index, spend.valid_from))
+			.try_insert(insert_pos, (current_index, now))
 			.map_err(|_| Error::<T, I>::QueueFull)?;
 
 		// Promote the front of queue to NextPayout and remove it from queue
-		if let Some(&(new_next, _new_valid_from)) = queue.first() {
-			let now = T::BlockNumberProvider::current_block_number();
-			let new_expire_at = now.saturating_add(T::OrderExpirationPeriod::get());
+		if let Some(&(new_next, order_key)) = queue.first() {
+			let new_expire_at = now.max(order_key).saturating_add(T::OrderExpirationPeriod::get());
 			NextPayout::<T, I>::insert(asset_kind, (new_next, new_expire_at));
 			// Remove the promoted entry from queue since it's now NextPayout
 			queue.remove(0);
@@ -1278,63 +1295,15 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 
 	// ## Invariants of payout queue storage items
 	//
-	// 1. If [`NextPayout`] for an asset kind is Some, the first element of [`PayoutQueue`] for
-	// that asset kind must match the spend index in [`NextPayout`].
-	// 2. All spend indices in [`PayoutQueue`] for an asset kind must exist in [`Spends`] and
-	// have Pending or Failed status.
-	// 3. The length of each [`PayoutQueue`] must not exceed [`Config::MaxQueuedSpends`].
-	// 4. No duplicate spend indices in any [`PayoutQueue`].
-	// 5. The queue for each asset kind must be sorted by valid_from.
-	// #[cfg(any(feature = "try-runtime", test))]
-	// fn try_state_payout_queue() -> Result<(), sp_runtime::TryRuntimeError> {
-	// use alloc::collections::btree_set::BTreeSet;
-	//
-	// for (asset_kind, queue) in PayoutQueue::<T, I>::iter() {
-	// ensure!(
-	// queue.len() as u32 <= T::MaxQueuedSpends::get(),
-	// "Payout queue length exceeds MaxQueuedSpends."
-	// );
-	//
-	// Check no duplicates
-	// let unique_indices: BTreeSet<_> = queue.iter().map(|(idx, _)| *idx).collect();
-	// ensure!(
-	// unique_indices.len() == queue.len() as usize,
-	// "Payout queue contains duplicate spend indices."
-	// );
-	//
-	// Check sorted by valid_from
-	// let mut prev_valid_from: Option<BlockNumberFor<T, I>> = None;
-	// for (_, valid_from) in queue.iter() {
-	// if let Some(prev) = prev_valid_from {
-	// ensure!(
-	// prev <= *valid_from,
-	// "Payout queue is not sorted by valid_from."
-	// );
-	// }
-	// prev_valid_from = Some(*valid_from);
-	// }
-	//
-	// if let Some((next_index, _)) = NextPayout::<T, I>::get(&asset_kind) {
-	// ensure!(
-	// queue.first().map(|(idx, _)| *idx) == Some(next_index),
-	// "NextPayout must match the first element of PayoutQueue."
-	// );
-	// }
-	//
-	// for (spend_index, _) in queue.iter() {
-	// let spend = Spends::<T, I>::get(spend_index).ok_or(
-	// sp_runtime::TryRuntimeError::Other("Spend in queue must exist in Spends."),
-	// )?;
-	// ensure!(
-	// matches!(spend.status, PaymentState::Pending | PaymentState::Failed),
-	// "Spend in queue must have Pending or Failed status."
-	// );
-	// }
-	// }
-	//
-	// Ok(())
-	// }
-
+	// 1. The length of each [`PayoutQueue`] must not exceed [`Config::MaxQueuedSpends`].
+	// 2. No duplicate spend indices in any [`PayoutQueue`].
+	// 3. The queue for each asset kind must be sorted by order key. The order key is
+	// `valid_from` for newly inserted spends and the block number of the rotation for rotated
+	// spends, so the sort order always holds.
+	// 4. If [`NextPayout`] for an asset kind is Some, its spend index must not also be present
+	// in the [`PayoutQueue`] for that asset kind.
+	// 5. All spend indices in [`PayoutQueue`] for an asset kind must exist in [`Spends`] with
+	// Pending or Failed status and a matching asset kind.
 	#[cfg(any(feature = "try-runtime", test))]
 	fn try_state_payout_queue() -> Result<(), sp_runtime::TryRuntimeError> {
 		use alloc::collections::btree_set::BTreeSet;
@@ -1352,13 +1321,13 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 				"Payout queue contains duplicate spend indices."
 			);
 
-			// Check sorted by valid_from
-			let mut prev_valid_from: Option<BlockNumberFor<T, I>> = None;
-			for (_, valid_from) in queue.iter() {
-				if let Some(prev) = prev_valid_from {
-					ensure!(prev <= *valid_from, "Payout queue is not sorted by valid_from.");
+			// Check sorted by order key
+			let mut prev_order_key: Option<BlockNumberFor<T, I>> = None;
+			for (_, order_key) in queue.iter() {
+				if let Some(prev) = prev_order_key {
+					ensure!(prev <= *order_key, "Payout queue is not sorted by order key.");
 				}
-				prev_valid_from = Some(*valid_from);
+				prev_order_key = Some(*order_key);
 			}
 
 			// Check that NextPayout is not also in the queue (they're separate)

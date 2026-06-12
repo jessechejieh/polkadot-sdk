@@ -1176,13 +1176,51 @@ fn check_status_rotates_expired_order() {
 		let info = Treasury::check_status(RuntimeOrigin::signed(1), 0).unwrap();
 		assert_eq!(info.pays_fee, Pays::No);
 
-		// Queue should be rotated: spend 0 moved to back
+		// Queue should be rotated: spend 0 moved to back with `now` as its order key
 		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
-		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 1)]);
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 4)]);
 
 		System::assert_last_event(
 			Event::<Test, _>::PayoutQueueRotated { asset_kind: 1, index: 0 }.into(),
 		);
+
+		// The queue must still satisfy all invariants after the rotation
+		assert_ok!(Treasury::do_try_state());
+	});
+}
+
+#[test]
+fn rotated_spend_keeps_queue_sorted_and_passes_try_state() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Two immediately payable spends and one not yet mature
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(100), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(200), None));
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			2,
+			Box::new(300),
+			Some(10)
+		));
+
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(1, 1), (2, 10)]);
+
+		// Move past the head's order expiration and rotate it
+		System::set_block_number(4);
+		let info = Treasury::check_status(RuntimeOrigin::signed(1), 0).unwrap();
+		assert_eq!(info.pays_fee, Pays::No);
+
+		// The rotated spend is re-inserted with `now` (4) as its order key, which places it
+		// behind every mature spend but ahead of the not-yet-mature one, keeping the queue
+		// sorted. Spend 1 is promoted to NextPayout.
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 4), (2, 10)]);
+
+		// The sortedness invariant must hold after the rotation
+		assert_ok!(Treasury::do_try_state());
 	});
 }
 
@@ -1352,6 +1390,7 @@ fn complex_scenario_with_rotation_and_completion() {
 
 		// Spend 2 should now be NextPayout
 		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(2));
+		assert_ok!(Treasury::do_try_state());
 
 		// Payout spend 2
 		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 2));

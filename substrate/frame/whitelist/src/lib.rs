@@ -171,6 +171,12 @@ pub mod pallet {
 		pub expire_at: ProvidedBlockNumberFor<T>,
 		/// Encoded length of the call (for weight calculation)
 		pub call_encoded_len: u32,
+		/// Whether `defer_dispatch` noted the preimage itself.
+		///
+		/// `note` implicitly creates one preimage request (`Requested { count: 1 }`), which this
+		/// pallet owns and must release with an extra `unrequest` when the entry is dispatched or
+		/// removed. See [`Pallet::defer_dispatch`].
+		pub noted_by_us: bool,
 	}
 
 	#[pallet::call]
@@ -224,12 +230,9 @@ pub mod pallet {
 					}
 					None
 				},
-				Err(dispatch_origin) => Some(Self::ensure_signed_deferred_dispatch(
-					dispatch_origin,
-					call_hash,
-					None,
-					true,
-				)?),
+				Err(dispatch_origin) => {
+					Some(Self::ensure_signed_deferred_dispatch(dispatch_origin, call_hash)?)
+				},
 			};
 
 			Self::clean_and_dispatch(
@@ -263,12 +266,9 @@ pub mod pallet {
 					}
 					None
 				},
-				Err(dispatch_origin) => Some(Self::ensure_signed_deferred_dispatch(
-					dispatch_origin,
-					call_hash,
-					Some(call_len),
-					false,
-				)?),
+				Err(dispatch_origin) => {
+					Some(Self::ensure_signed_deferred_dispatch(dispatch_origin, call_hash)?)
+				},
 			};
 
 			Self::clean_and_dispatch(
@@ -294,6 +294,10 @@ pub mod pallet {
 			ensure!(now >= deferred_entry.expire_at, Error::<T>::DeferredDispatchNotExpired);
 
 			DeferredDispatch::<T>::remove(call_hash);
+			// Release the implicit request taken by `note` in `defer_dispatch`, if any.
+			if deferred_entry.noted_by_us {
+				T::Preimages::unrequest(&call_hash);
+			}
 
 			Self::deposit_event(Event::<T>::DeferredDispatchRemoved { call_hash });
 
@@ -319,15 +323,20 @@ impl<T: Config> Pallet<T> {
 
 		ensure!(!DeferredDispatch::<T>::contains_key(call_hash), Error::<T>::AlreadyDeferred);
 
-		if let Some(ref preimage_data) = preimage {
-			if T::Preimages::note(preimage_data.into()).is_err() {
-				// If noting fails (e.g., already in storage),
-				// fallback to requesting (reference counting)
-				let _ = T::Preimages::request(&call_hash);
-			}
-		}
+		// When a preimage is supplied we note it so the call can later be relayed by hash via
+		// `dispatch_whitelisted_call`. `note` implicitly takes one request (`Requested { count: 1
+		// }`) that we own; `noted_by_us` records this so it is released on dispatch/removal.
+		let noted_by_us = if let Some(ref preimage_data) = preimage {
+			T::Preimages::note(preimage_data.into())?;
+			true
+		} else {
+			false
+		};
 
-		DeferredDispatch::<T>::insert(call_hash, DeferredEntry { expire_at, call_encoded_len });
+		DeferredDispatch::<T>::insert(
+			call_hash,
+			DeferredEntry { expire_at, call_encoded_len, noted_by_us },
+		);
 
 		Self::deposit_event(Event::<T>::DispatchDeferred { call_hash });
 
@@ -344,16 +353,16 @@ impl<T: Config> Pallet<T> {
 	/// - The origin is a signed account.
 	/// - A deferred dispatch entry exists for the call hash.
 	/// - The deferred dispatch has not yet expired.
+	/// - The call is still whitelisted.
 	///
-	/// If `check_whitelist` is `true`, verifies the call is still whitelisted.
-	/// If `check_whitelist` is `false`, verifies the preimage is available.
+	/// The whitelist is always re-checked so that revoking the whitelist (via
+	/// [`Pallet::remove_whitelisted_call`]) prevents a relayer from executing a still-deferred
+	/// call.
 	///
 	/// Returns the signed account ID if all checks pass.
 	fn ensure_signed_deferred_dispatch(
 		origin: T::RuntimeOrigin,
 		call_hash: T::Hash,
-		call_encoded_len: Option<u32>,
-		check_whitelist: bool,
 	) -> Result<T::AccountId, DispatchError> {
 		let who = ensure_signed(origin)?;
 
@@ -365,15 +374,7 @@ impl<T: Config> Pallet<T> {
 			Error::<T>::DeferredDispatchExpired
 		);
 
-		if check_whitelist {
-			ensure!(
-				WhitelistedCall::<T>::contains_key(call_hash),
-				Error::<T>::CallIsNotWhitelisted
-			);
-		} else {
-			let _ = T::Preimages::fetch(&call_hash, call_encoded_len)
-				.map_err(|_| Error::<T>::UnavailablePreImage)?;
-		}
+		ensure!(WhitelistedCall::<T>::contains_key(call_hash), Error::<T>::CallIsNotWhitelisted);
 
 		Ok(who)
 	}
@@ -411,7 +412,10 @@ impl<T: Config> Pallet<T> {
 
 		WhitelistedCall::<T>::remove(call_hash);
 		T::Preimages::unrequest(&call_hash);
-		DeferredDispatch::<T>::remove(call_hash);
+		// Release the implicit request taken by `note` in `defer_dispatch`, if any.
+		if DeferredDispatch::<T>::take(call_hash).map_or(false, |entry| entry.noted_by_us) {
+			T::Preimages::unrequest(&call_hash);
+		}
 
 		let result = call.dispatch(frame_system::Origin::<T>::Root.into());
 

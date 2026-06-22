@@ -22,7 +22,9 @@ crates:
     bump: minor
   - name: rococo-runtime
     bump: minor
-  - name: westend-runtime
-    bump: minor
   - name: kitchensink-runtime
+    bump: minor
+  - name: pallet-staking-async-parachain-runtime
+    bump: minor
+  - name: pallet-staking-async-rc-runtime
     bump: minor

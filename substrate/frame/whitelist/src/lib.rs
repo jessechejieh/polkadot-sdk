@@ -218,15 +218,12 @@ pub mod pallet {
 			call_weight_witness: Weight,
 		) -> DispatchResultWithPostInfo {
 			let relayer = match T::DispatchWhitelistedOrigin::try_origin(origin) {
+				Ok(_) if WhitelistedCall::<T>::contains_key(call_hash) => None,
 				Ok(_) => {
-					if !WhitelistedCall::<T>::contains_key(call_hash) {
-						Self::defer_dispatch(call_hash, call_encoded_len)?;
-						return Ok(Some(T::WeightInfo::dispatch_whitelisted_call(
-							call_encoded_len,
-						))
-						.into());
-					}
-					None
+					Self::defer_dispatch(call_hash, call_encoded_len)?;
+					return Ok(
+						Some(T::WeightInfo::dispatch_whitelisted_call(call_encoded_len)).into()
+					);
 				},
 				Err(dispatch_origin) => {
 					Some(Self::ensure_signed_deferred_dispatch(dispatch_origin, call_hash)?)
@@ -258,15 +255,13 @@ pub mod pallet {
 			let call_len = call.encoded_size() as u32;
 
 			let relayer = match T::DispatchWhitelistedOrigin::try_origin(origin) {
+				Ok(_) if WhitelistedCall::<T>::contains_key(call_hash) => None,
 				Ok(_) => {
-					if !WhitelistedCall::<T>::contains_key(call_hash) {
-						Self::defer_dispatch(call_hash, call_len)?;
-						return Ok(Some(T::WeightInfo::dispatch_whitelisted_call_with_preimage(
-							call_len,
-						))
-						.into());
-					}
-					None
+					Self::defer_dispatch(call_hash, call_len)?;
+					return Ok(Some(T::WeightInfo::dispatch_whitelisted_call_with_preimage(
+						call_len,
+					))
+					.into());
 				},
 				Err(dispatch_origin) => {
 					Some(Self::ensure_signed_deferred_dispatch(dispatch_origin, call_hash)?)

@@ -55,17 +55,6 @@ pub use pallet::*;
 pub type ProvidedBlockNumberFor<T> =
 	<<T as Config>::BlockNumberProvider as BlockNumberProvider>::BlockNumber;
 
-/// Source of the call data for dispatch.
-#[derive(
-	Encode, Decode, DecodeWithMemTracking, Clone, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen,
-)]
-enum CallSource<T: Config> {
-	/// Fetch and decode from preimage storage (used by `dispatch_whitelisted_call`).
-	Preimage { encoded_len: u32, weight_witness: Weight },
-	/// Call provided directly (used by `dispatch_whitelisted_call_with_preimage`).
-	Direct { call: Box<<T as Config>::RuntimeCall>, encoded_len: u32 },
-}
-
 #[frame::pallet]
 pub mod pallet {
 	use super::*;
@@ -230,14 +219,29 @@ pub mod pallet {
 				},
 			};
 
-			Self::clean_and_dispatch(
-				call_hash,
-				CallSource::Preimage {
-					encoded_len: call_encoded_len,
-					weight_witness: call_weight_witness,
-				},
-				relayer,
+			let call_data = T::Preimages::fetch(&call_hash, Some(call_encoded_len))
+				.map_err(|_| Error::<T>::UnavailablePreImage)?;
+
+			let call = <T as Config>::RuntimeCall::decode_all_with_depth_limit(
+				frame::deps::frame_support::MAX_EXTRINSIC_DEPTH,
+				&mut &call_data[..],
 			)
+			.map_err(|_| Error::<T>::UndecodableCall)?;
+
+			ensure!(
+				call.get_dispatch_info().call_weight.all_lte(call_weight_witness),
+				Error::<T>::InvalidCallWeightWitness
+			);
+
+			let call_actual_weight = Self::clean_and_dispatch(call_hash, call);
+			if let Some(who) = relayer {
+				Self::deposit_event(Event::<T>::DeferredDispatchExecuted { call_hash, who });
+			}
+
+			let actual_weight = call_actual_weight.map(|w| {
+				w.saturating_add(T::WeightInfo::dispatch_whitelisted_call(call_encoded_len))
+			});
+			Ok(actual_weight.into())
 		}
 
 		#[pallet::call_index(3)]
@@ -268,11 +272,15 @@ pub mod pallet {
 				},
 			};
 
-			Self::clean_and_dispatch(
-				call_hash,
-				CallSource::Direct { call, encoded_len: call_len },
-				relayer,
-			)
+			let call_actual_weight = Self::clean_and_dispatch(call_hash, *call);
+			if let Some(who) = relayer {
+				Self::deposit_event(Event::<T>::DeferredDispatchExecuted { call_hash, who });
+			}
+
+			let actual_weight = call_actual_weight.map(|w| {
+				w.saturating_add(T::WeightInfo::dispatch_whitelisted_call_with_preimage(call_len))
+			});
+			Ok(actual_weight.into())
 		}
 
 		#[pallet::call_index(4)]
@@ -350,37 +358,10 @@ impl<T: Config> Pallet<T> {
 		Ok(who)
 	}
 
-	/// Clean whitelisting/preimage, dispatch call, and handle weight calculation.
+	/// Clean whitelisting/preimage and dispatch call.
 	///
-	/// Returns the `DispatchResultWithPostInfo` with the actual weight including overhead.
-	fn clean_and_dispatch(
-		call_hash: T::Hash,
-		source: CallSource<T>,
-		relayer: Option<T::AccountId>,
-	) -> DispatchResultWithPostInfo {
-		let (call, weight_overhead) = match source {
-			CallSource::Preimage { encoded_len, weight_witness } => {
-				let call_data = T::Preimages::fetch(&call_hash, Some(encoded_len))
-					.map_err(|_| Error::<T>::UnavailablePreImage)?;
-
-				let call = <T as Config>::RuntimeCall::decode_all_with_depth_limit(
-					frame::deps::frame_support::MAX_EXTRINSIC_DEPTH,
-					&mut &call_data[..],
-				)
-				.map_err(|_| Error::<T>::UndecodableCall)?;
-
-				ensure!(
-					call.get_dispatch_info().call_weight.all_lte(weight_witness),
-					Error::<T>::InvalidCallWeightWitness
-				);
-
-				(call, T::WeightInfo::dispatch_whitelisted_call(encoded_len))
-			},
-			CallSource::Direct { call, encoded_len } => {
-				(*call, T::WeightInfo::dispatch_whitelisted_call_with_preimage(encoded_len))
-			},
-		};
-
+	/// Returns the inner call's actual weight.
+	fn clean_and_dispatch(call_hash: T::Hash, call: <T as Config>::RuntimeCall) -> Option<Weight> {
 		WhitelistedCall::<T>::remove(call_hash);
 		T::Preimages::unrequest(&call_hash);
 		DeferredDispatch::<T>::remove(call_hash);
@@ -391,16 +372,8 @@ impl<T: Config> Pallet<T> {
 			Ok(call_post_info) => call_post_info.actual_weight,
 			Err(call_err) => call_err.post_info.actual_weight,
 		};
-
 		Self::deposit_event(Event::<T>::WhitelistedCallDispatched { call_hash, result });
 
-		if let Some(who) = relayer {
-			if result.is_ok() {
-				Self::deposit_event(Event::<T>::DeferredDispatchExecuted { call_hash, who });
-			}
-		}
-
-		let actual_weight = call_actual_weight.map(|w| w.saturating_add(weight_overhead));
-		Ok(actual_weight.into())
+		call_actual_weight
 	}
 }

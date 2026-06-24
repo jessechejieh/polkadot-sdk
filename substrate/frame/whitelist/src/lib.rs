@@ -117,7 +117,11 @@ pub mod pallet {
 		DeferredDispatchRemoved {
 			call_hash: T::Hash,
 		},
-		/// Emitted only when a relayer (signed origin) executes a deferred dispatch.
+		/// A relayer (signed origin) executed a deferred dispatch.
+		///
+		/// Emitted whenever the deferred entry is consumed by a relayer, regardless of whether the
+		/// inner call itself succeeded; the inner call's outcome is reported separately by
+		/// [`Event::WhitelistedCallDispatched`].
 		DeferredDispatchExecuted {
 			call_hash: T::Hash,
 			who: T::AccountId,
@@ -197,9 +201,9 @@ pub mod pallet {
 
 		#[pallet::call_index(2)]
 		#[pallet::weight(
-            T::WeightInfo::dispatch_whitelisted_call(*call_encoded_len)
-                .saturating_add(*call_weight_witness)
-        )]
+			T::WeightInfo::dispatch_whitelisted_call(*call_encoded_len)
+				.saturating_add(*call_weight_witness)
+		)]
 		pub fn dispatch_whitelisted_call(
 			origin: OriginFor<T>,
 			call_hash: T::Hash,
@@ -246,11 +250,11 @@ pub mod pallet {
 
 		#[pallet::call_index(3)]
 		#[pallet::weight({
-            let call_weight = call.get_dispatch_info().call_weight;
-            let call_len = call.encoded_size() as u32;
-            T::WeightInfo::dispatch_whitelisted_call_with_preimage(call_len)
-                .saturating_add(call_weight)
-        })]
+			let call_weight = call.get_dispatch_info().call_weight;
+			let call_len = call.encoded_size() as u32;
+			T::WeightInfo::dispatch_whitelisted_call_with_preimage(call_len)
+				.saturating_add(call_weight)
+		})]
 		pub fn dispatch_whitelisted_call_with_preimage(
 			origin: OriginFor<T>,
 			call: Box<<T as Config>::RuntimeCall>,

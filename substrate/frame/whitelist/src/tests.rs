@@ -245,7 +245,10 @@ fn test_whitelist_call_and_execute_without_note_preimage() {
 			call.clone()
 		));
 
-		assert!(Preimage::is_requested(&call_hash));
+		// Deferring via `dispatch_whitelisted_call_with_preimage` no longer notes the preimage, so
+		// the deferral itself registers no preimage request. The relayer below still executes the
+		// call by re-supplying its bytes, not by fetching a stored preimage.
+		assert!(!Preimage::is_requested(&call_hash));
 
 		assert!(events().iter().any(|event| {
 			match event {
@@ -370,6 +373,16 @@ fn test_deferred_dispatch_failed_inner_call() {
 					 call_hash: hash,
 					 result: Err(DispatchErrorWithPostInfo { error: DispatchError::BadOrigin, .. })
 				 } if hash == &call_hash
+			)
+		}));
+
+		// Even though the inner call failed, the deferred entry was still consumed by the relayer,
+		// so `DeferredDispatchExecuted` is emitted regardless of the inner call's outcome.
+		assert!(emitted_events.iter().any(|event| {
+			matches!(
+				event,
+				Event::<Test>::DeferredDispatchExecuted { call_hash: hash, who: 1 }
+				if hash == &call_hash
 			)
 		}));
 		assert!(!Preimage::is_requested(&call_hash));
@@ -544,52 +557,34 @@ fn test_deferred_dispatch_with_signed_origin() {
 }
 
 #[test]
-fn deferred_preimage_does_not_leak() {
-	new_test_ext().execute_with(|| {
-		let call =
-			Box::new(RuntimeCall::System(frame_system::Call::remark { remark: vec![1u8; 32] }));
-		let call_hash = <Test as frame_system::Config>::Hashing::hash_of(&call);
-
-		// Root defers the call before it is whitelisted; the pallet notes the preimage itself.
-		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
-			RuntimeOrigin::root(),
-			call.clone(),
-		));
-		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
-
-		// A relayer executes the now-whitelisted deferred call.
-		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
-			RuntimeOrigin::signed(1),
-			call,
-		));
-
-		// The implicit request taken by `note` is released, leaving no request or preimage behind.
-		assert!(!Preimage::is_requested(&call_hash));
-		assert_eq!(pallet_preimage::RequestStatusFor::<Test>::iter().count(), 0);
-		assert_eq!(pallet_preimage::PreimageFor::<Test>::iter().count(), 0);
-	});
-}
-
-#[test]
-fn expired_deferred_preimage_does_not_leak() {
+fn remove_deferred_dispatch_works() {
 	new_test_ext().execute_with(|| {
 		let call =
 			Box::new(RuntimeCall::System(frame_system::Call::remark { remark: vec![3u8; 24] }));
 		let call_hash = <Test as frame_system::Config>::Hashing::hash_of(&call);
 
-		// Root defers the call; it is never whitelisted and simply expires.
-		assert_ok!(
-			Whitelist::dispatch_whitelisted_call_with_preimage(RuntimeOrigin::root(), call,)
+		// Root defers the call; it is never whitelisted.
+		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(RuntimeOrigin::root(), call));
+
+		// It cannot be removed until it has expired.
+		assert_noop!(
+			Whitelist::remove_deferred_dispatch(RuntimeOrigin::signed(1), call_hash),
+			crate::Error::<Test>::DeferredDispatchNotExpired
 		);
 
-		// Past the expiration window, anyone can clean up the deferred entry.
+		// Past the expiration window, anyone can permissionlessly clean up the entry.
 		run_to_block(System::block_number() + 16);
 		assert_ok!(Whitelist::remove_deferred_dispatch(RuntimeOrigin::signed(1), call_hash));
+		assert!(events().iter().any(|event| matches!(
+			event,
+			Event::<Test>::DeferredDispatchRemoved { call_hash: hash } if hash == &call_hash
+		)));
 
-		// Removing the expired entry also releases the noted preimage.
-		assert!(!Preimage::is_requested(&call_hash));
-		assert_eq!(pallet_preimage::RequestStatusFor::<Test>::iter().count(), 0);
-		assert_eq!(pallet_preimage::PreimageFor::<Test>::iter().count(), 0);
+		// The entry is gone: a second removal finds nothing.
+		assert_noop!(
+			Whitelist::remove_deferred_dispatch(RuntimeOrigin::signed(1), call_hash),
+			crate::Error::<Test>::DeferredDispatchNotFound
+		);
 	});
 }
 

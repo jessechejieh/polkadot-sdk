@@ -203,8 +203,12 @@ mod migrate_to_ordered_payouts {
 
 			// Process each AssetKind
 			for (_, (asset_kind, mut spends)) in spends_by_asset {
-				// Sort by valid_from, then by index for deterministic ordering (consensus safety)
-				spends.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+				// Sort by the clamped order key (`max(now, valid_from)`), then by index for
+				// deterministic ordering (consensus safety). Clamping is what keeps spends already
+				// mature at migration ordered by approval (index) rather than by a back-dated
+				// `valid_from`, matching the runtime insertion rule; not-yet-mature spends still
+				// order by their maturity.
+				spends.sort_by(|a, b| now.max(a.1).cmp(&now.max(b.1)).then_with(|| a.0.cmp(&b.0)));
 
 				let spend_count = spends.len() as u32;
 				total_spends_processed += spend_count;

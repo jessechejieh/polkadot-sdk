@@ -75,9 +75,10 @@
 //! spends from draining the treasury before larger, earlier-approved spends can be paid.
 //!
 //! When a spend is approved via the `spend` call, it is automatically inserted into the payout
-//! queue for its asset kind, sorted by an order key — the spend's `valid_from` for newly
-//! inserted spends. Spends are then paid out in order via the `payout` call, which only
-//! processes the spend at the head of the queue for that asset kind.
+//! queue for its asset kind, sorted by an order key — `max(now, valid_from)` for newly
+//! inserted spends, so a later approval never overtakes an already-mature spend. Spends are then
+//! paid out in order via the `payout` call, which only processes the spend at the head of the
+//! queue for that asset kind.
 //!
 //! If a spend at the head of the queue cannot be paid out (e.g., due to insufficient funds),
 //! its order will expire after [`Config::OrderExpirationPeriod`] blocks. The `check_status` call
@@ -388,15 +389,24 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type LastSpendPeriod<T, I = ()> = StorageValue<_, BlockNumberFor<T, I>, OptionQuery>;
 
-	/// The next spend to be paid out for each asset kind, with its order expiration block.
+	/// The next spend to be paid out for each asset kind, as `(spend_index, order_key,
+	/// expire_at)`. `order_key` is the head's order key (`max(now, valid_from)` for a freshly
+	/// inserted spend, or the rotation block for a rotated one) and is used to keep the head ahead
+	/// of every queued spend. `expire_at` is the block at which its position at the head expires
+	/// and it can be rotated to the back.
 	#[pallet::storage]
-	pub type NextPayout<T: Config<I>, I: 'static = ()> =
-		StorageMap<_, Twox64Concat, T::AssetKind, (SpendIndex, BlockNumberFor<T, I>), OptionQuery>;
+	pub type NextPayout<T: Config<I>, I: 'static = ()> = StorageMap<
+		_,
+		Twox64Concat,
+		T::AssetKind,
+		(SpendIndex, BlockNumberFor<T, I>, BlockNumberFor<T, I>),
+		OptionQuery,
+	>;
 
 	/// The queue of spends in payout order for each asset kind.
 	///
 	/// Each entry contains `(spend_index, order_key)` and the queue is sorted by the order key.
-	/// The order key is the spend's `valid_from` for newly inserted spends and the block number
+	/// The order key is `max(now, valid_from)` for newly inserted spends and the block number
 	/// of the rotation for spends that were rotated to the back after their order expired.
 	#[pallet::storage]
 	pub type PayoutQueue<T: Config<I>, I: 'static = ()> = StorageMap<
@@ -688,7 +698,7 @@ pub mod pallet {
 		/// the [`Config::PayoutPeriod`].
 		///
 		/// The spend is automatically inserted into the payout queue for its asset kind in sorted
-		/// order by its order key (`valid_from` for new spends). If there is no current
+		/// order by its order key (`max(now, valid_from)` for new spends). If there is no current
 		/// `NextPayout` for this asset kind, the spend becomes the `NextPayout` with an
 		/// expiration of `max(now, valid_from) + OrderExpirationPeriod`.
 		///
@@ -877,7 +887,7 @@ pub mod pallet {
 			}
 
 			// Check if this spend is the NextPayout and if its order has expired
-			if let Some((next_index, expire_at)) = NextPayout::<T, I>::get(&asset_kind) {
+			if let Some((next_index, _, expire_at)) = NextPayout::<T, I>::get(&asset_kind) {
 				if next_index == index && expire_at < now {
 					// Order has expired - rotate the queue if spend is still Pending/Failed
 					if matches!(spend.status, State::Pending | State::Failed) {
@@ -942,8 +952,8 @@ pub mod pallet {
 				Error::<T, I>::AlreadyAttempted
 			);
 
-			let asset_kind = spend.asset_kind.clone();
-			Self::remove_from_queue(&asset_kind, index);
+			// let asset_kind = spend.asset_kind.clone();
+			Self::remove_from_queue(&spend.asset_kind, index);
 			Spends::<T, I>::remove(index);
 			Self::deposit_event(Event::<T, I>::AssetSpendVoided { index });
 			Ok(())
@@ -1008,38 +1018,63 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 		Approvals::<T, I>::get()
 	}
 
-	/// Insert a newly approved spend into the payout queue for the given asset kind, keeping the
-	/// queue sorted by order key. For newly inserted spends the order key is the spend's
-	/// `valid_from`. If there is no NextPayout for this asset kind, the spend becomes the
-	/// NextPayout instead.
+	/// Insert a newly approved spend into the payout order for the given asset kind. For newly
+	/// inserted spends the order key is `max(now, valid_from)` — `valid_from` clamped to the
+	/// approval block, so a later approval cannot overtake an already-mature spend.
+	///
+	/// The head ([`NextPayout`]) is always the earliest-maturing spend:
+	/// - if there is no head yet, the spend becomes the head;
+	/// - if the spend matures strictly earlier than the current head, it preempts it: the current
+	///   head is demoted into the queue (kept sorted by its own order key) and the new spend
+	///   becomes the head;
+	/// - otherwise the spend is inserted into the queue in sorted order.
 	fn insert_into_payout_queue(
 		asset_kind: T::AssetKind,
 		index: SpendIndex,
 		valid_from: BlockNumberFor<T, I>,
 	) -> DispatchResult {
-		// Check if there's already a NextPayout for this asset kind
-		if NextPayout::<T, I>::get(&asset_kind).is_some() {
-			// There's already a NextPayout, add to queue in sorted order
-			let mut queue = PayoutQueue::<T, I>::get(&asset_kind);
+		let now = T::BlockNumberProvider::current_block_number();
+		// The order key is clamped to `now` so that a spend approved later never overtakes an
+		// already-mature spend just because its `valid_from` lies further in the past. Spends that
+		// are already mature on approval are ordered by approval time, while not-yet-mature spends
+		// are ordered by their maturity (`valid_from`).
+		let order_key = now.max(valid_from);
+		// The order only starts counting down once the spend is mature.
+		let expire_at = order_key.saturating_add(T::OrderExpirationPeriod::get());
 
-			// Find the correct position to insert (maintain sorted order by order key)
-			let insert_pos = queue
-				.iter()
-				.position(|(_, order_key)| *order_key > valid_from)
-				.unwrap_or(queue.len());
-
-			// Insert at the found position
-			if queue.try_insert(insert_pos, (index, valid_from)).is_err() {
-				return Err(Error::<T, I>::QueueFull.into());
-			}
-
-			PayoutQueue::<T, I>::insert(&asset_kind, queue);
-		} else {
-			// No NextPayout for this asset kind, set this as NextPayout. The order only starts
-			// counting down once the spend is mature.
-			let now = T::BlockNumberProvider::current_block_number();
-			let expire_at = now.max(valid_from).saturating_add(T::OrderExpirationPeriod::get());
-			NextPayout::<T, I>::insert(&asset_kind, (index, expire_at));
+		match NextPayout::<T, I>::get(&asset_kind) {
+			// No head for this asset kind yet, set this spend as the head.
+			None => {
+				NextPayout::<T, I>::insert(&asset_kind, (index, order_key, expire_at));
+			},
+			// The new spend matures strictly earlier than the current head: it preempts the head.
+			// Demote the current head into the queue (keeping it sorted by its own order key) and
+			// install the new spend as the head.
+			Some((head_index, head_order_key, _)) if order_key < head_order_key => {
+				let mut queue = PayoutQueue::<T, I>::get(&asset_kind);
+				let insert_pos = queue
+					.iter()
+					.position(|(_, order_key)| *order_key > head_order_key)
+					.unwrap_or(queue.len());
+				queue
+					.try_insert(insert_pos, (head_index, head_order_key))
+					.map_err(|_| Error::<T, I>::QueueFull)?;
+				PayoutQueue::<T, I>::insert(&asset_kind, queue);
+				NextPayout::<T, I>::insert(&asset_kind, (index, order_key, expire_at));
+			},
+			// The head already matures no later than the new spend, add it to the queue in sorted
+			// order.
+			Some(_) => {
+				let mut queue = PayoutQueue::<T, I>::get(&asset_kind);
+				let insert_pos = queue
+					.iter()
+					.position(|(_, queue_order_key)| *queue_order_key > order_key)
+					.unwrap_or(queue.len());
+				queue
+					.try_insert(insert_pos, (index, order_key))
+					.map_err(|_| Error::<T, I>::QueueFull)?;
+				PayoutQueue::<T, I>::insert(&asset_kind, queue);
+			},
 		}
 
 		Ok(())
@@ -1048,7 +1083,7 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 	/// Remove a spend from the payout queue for the given asset kind and update NextPayout.
 	/// Called when a spend is successfully paid out, expired, or voided.
 	fn remove_from_queue(asset_kind: &T::AssetKind, index: SpendIndex) {
-		if let Some((next_index, _)) = NextPayout::<T, I>::get(asset_kind) {
+		if let Some((next_index, _, _)) = NextPayout::<T, I>::get(asset_kind) {
 			if next_index == index {
 				// This was the next payout, promote the next one from the queue
 				let mut queue = PayoutQueue::<T, I>::get(asset_kind);
@@ -1061,7 +1096,10 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 					let now = T::BlockNumberProvider::current_block_number();
 					let new_expire_at =
 						now.max(order_key).saturating_add(T::OrderExpirationPeriod::get());
-					NextPayout::<T, I>::insert(asset_kind, (new_next_index, new_expire_at));
+					NextPayout::<T, I>::insert(
+						asset_kind,
+						(new_next_index, order_key, new_expire_at),
+					);
 
 					// Remove it from queue
 					queue.remove(0);
@@ -1085,7 +1123,7 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 	/// Re-inserts the current NextPayout into the queue with an order key of `now`, keeping the
 	/// queue sorted by order key, and promotes the next entry.
 	fn rotate_payout_queue(asset_kind: &T::AssetKind) -> DispatchResult {
-		let (current_index, _) =
+		let (current_index, _, _) =
 			NextPayout::<T, I>::get(asset_kind).ok_or(Error::<T, I>::NotNextPayout)?;
 		let mut queue = PayoutQueue::<T, I>::get(asset_kind);
 		let now = T::BlockNumberProvider::current_block_number();
@@ -1102,7 +1140,7 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 		// Promote the front of queue to NextPayout and remove it from queue
 		if let Some(&(new_next, order_key)) = queue.first() {
 			let new_expire_at = now.max(order_key).saturating_add(T::OrderExpirationPeriod::get());
-			NextPayout::<T, I>::insert(asset_kind, (new_next, new_expire_at));
+			NextPayout::<T, I>::insert(asset_kind, (new_next, order_key, new_expire_at));
 			// Remove the promoted entry from queue since it's now NextPayout
 			queue.remove(0);
 		} else {
@@ -1331,7 +1369,7 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 			}
 
 			// Check that NextPayout is not also in the queue (they're separate)
-			if let Some((next_index, _)) = NextPayout::<T, I>::get(&asset_kind) {
+			if let Some((next_index, _, _)) = NextPayout::<T, I>::get(&asset_kind) {
 				ensure!(
 					!queue.iter().any(|(idx, _)| *idx == next_index),
 					"NextPayout should not be in PayoutQueue."

@@ -203,11 +203,15 @@ mod benchmarks {
 			create_spend_arguments::<T, _>(SEED);
 		T::BalanceConverter::ensure_successful(asset_kind.clone());
 
-		// Worst case: `NextPayout` is already occupied and the new spend is inserted into an
-		// almost full payout queue, scanning all existing entries.
+		// Worst case: `NextPayout` is already occupied by a later-maturing head, so the new spend
+		// (with `valid_from = now`) preempts it. The demoted head is re-inserted into an almost
+		// full payout queue, scanning all existing entries, and the head is rewritten.
 		let now = T::BlockNumberProvider::current_block_number();
-		let order_expire_at = now.saturating_add(T::OrderExpirationPeriod::get());
-		NextPayout::<T, I>::insert(asset_kind.clone(), (1_000_000u32, order_expire_at));
+		let head_order_key = now.saturating_add(T::OrderExpirationPeriod::get());
+		NextPayout::<T, I>::insert(
+			asset_kind.clone(),
+			(1_000_000u32, head_order_key, head_order_key),
+		);
 		fill_payout_queue::<T, I>(asset_kind.clone(), T::MaxQueuedSpends::get().saturating_sub(1));
 
 		#[extrinsic_call]

@@ -222,10 +222,14 @@ mod migrate_to_ordered_payouts {
 				let mut next_payout_set = false;
 
 				for (index, valid_from) in spends {
+					// The order key is clamped to `now` so that spends already mature at migration
+					// are ordered by approval (index), while not-yet-mature spends keep their
+					// maturity order. Clamping is monotonic, so the pre-sorted order is preserved.
+					let order_key = now.max(valid_from);
 					if !next_payout_set {
-						// First spend becomes NextPayout
-						let expire_at = now.saturating_add(T::OrderExpirationPeriod::get());
-						NextPayout::<T, I>::insert(&asset_kind, (index, expire_at));
+						// First spend (earliest-maturing) becomes NextPayout.
+						let expire_at = order_key.saturating_add(T::OrderExpirationPeriod::get());
+						NextPayout::<T, I>::insert(&asset_kind, (index, order_key, expire_at));
 						next_payout_set = true;
 						log::debug!(
 							target: LOG_TARGET,
@@ -235,7 +239,7 @@ mod migrate_to_ordered_payouts {
 						);
 					} else if queue.len() < T::MaxQueuedSpends::get() as usize {
 						// Add to queue
-						if let Err(_) = queue.try_push((index, valid_from)) {
+						if let Err(_) = queue.try_push((index, order_key)) {
 							log::warn!(
 								target: LOG_TARGET,
 								"Failed to push spend {} to queue (queue full)",
@@ -320,7 +324,7 @@ mod migrate_to_ordered_payouts {
 				}
 
 				// Verify NextPayout is NOT in queue
-				if let Some((next_index, _)) = NextPayout::<T, I>::get(&asset_kind) {
+				if let Some((next_index, _, _)) = NextPayout::<T, I>::get(&asset_kind) {
 					ensure!(
 						!queue.iter().any(|(idx, _)| *idx == next_index),
 						"NextPayout should not be in the queue"

@@ -368,11 +368,11 @@ fn test_deferred_dispatch_failed_inner_call() {
 		// remark_with_event requires RawOrigin::Signed(_)
 		assert!(emitted_events.iter().any(|event| {
 			matches!(
-				 event,
-				 Event::<Test>::WhitelistedCallDispatched {
-					 call_hash: hash,
-					 result: Err(DispatchErrorWithPostInfo { error: DispatchError::BadOrigin, .. })
-				 } if hash == &call_hash
+				event,
+				Event::<Test>::WhitelistedCallDispatched {
+					call_hash: hash,
+					result: Err(DispatchErrorWithPostInfo { error: DispatchError::BadOrigin, .. })
+				} if hash == &call_hash
 			)
 		}));
 
@@ -572,9 +572,12 @@ fn remove_deferred_dispatch_works() {
 			crate::Error::<Test>::DeferredDispatchNotExpired
 		);
 
-		// Past the expiration window, anyone can permissionlessly clean up the entry.
+		// Past the expiration window, anyone can permissionlessly clean up the entry, paying no
+		// fee.
 		run_to_block(System::block_number() + 16);
-		assert_ok!(Whitelist::remove_deferred_dispatch(RuntimeOrigin::signed(1), call_hash));
+		let post = Whitelist::remove_deferred_dispatch(RuntimeOrigin::signed(1), call_hash)
+			.expect("removal of an expired entry succeeds");
+		assert_eq!(post.pays_fee, Pays::No);
 		assert!(events().iter().any(|event| matches!(
 			event,
 			Event::<Test>::DeferredDispatchRemoved { call_hash: hash } if hash == &call_hash
@@ -607,5 +610,83 @@ fn relayer_cannot_bypass_unwhitelisting() {
 			Whitelist::dispatch_whitelisted_call_with_preimage(RuntimeOrigin::signed(1), call),
 			crate::Error::<Test>::CallIsNotWhitelisted,
 		);
+	});
+}
+
+#[test]
+fn relay_cannot_be_replayed() {
+	new_test_ext().execute_with(|| {
+		let call =
+			Box::new(RuntimeCall::System(frame_system::Call::remark { remark: vec![7u8; 8] }));
+		let call_hash = <Test as frame_system::Config>::Hashing::hash_of(&call);
+
+		// Defer, whitelist, then relay once — succeeds and consumes the deferred entry.
+		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
+			RuntimeOrigin::root(),
+			call.clone(),
+		));
+		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
+		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
+			RuntimeOrigin::signed(1),
+			call.clone(),
+		));
+
+		// A second relay of the same hash must fail: the authorized dispatch can't be replayed.
+		assert_noop!(
+			Whitelist::dispatch_whitelisted_call_with_preimage(RuntimeOrigin::signed(1), call),
+			crate::Error::<Test>::DeferredDispatchNotFound,
+		);
+	});
+}
+
+#[test]
+fn deferred_relay_nets_preimage_request_to_zero() {
+	new_test_ext().execute_with(|| {
+		let call =
+			Box::new(RuntimeCall::System(frame_system::Call::remark { remark: vec![9u8; 12] }));
+		let call_hash = <Test as frame_system::Config>::Hashing::hash_of(&call);
+
+		// Deferring does not note or request the preimage.
+		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
+			RuntimeOrigin::root(),
+			call.clone(),
+		));
+		assert!(!Preimage::is_requested(&call_hash));
+
+		// Whitelisting adds exactly one request.
+		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
+		assert!(Preimage::is_requested(&call_hash));
+
+		// Relaying the deferred call nets the request back to zero with nothing left behind.
+		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
+			RuntimeOrigin::signed(1),
+			call,
+		));
+		assert!(!Preimage::is_requested(&call_hash));
+		assert_eq!(pallet_preimage::RequestStatusFor::<Test>::iter().count(), 0);
+	});
+}
+
+#[test]
+fn remove_deferred_dispatch_does_not_unwhitelist() {
+	new_test_ext().execute_with(|| {
+		let call =
+			Box::new(RuntimeCall::System(frame_system::Call::remark { remark: vec![5u8; 20] }));
+		let call_hash = <Test as frame_system::Config>::Hashing::hash_of(&call);
+
+		// Defer and whitelist the call.
+		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(RuntimeOrigin::root(), call));
+		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
+		assert!(Preimage::is_requested(&call_hash));
+
+		// Clean up the deferred entry once it has expired.
+		run_to_block(System::block_number() + 16);
+		assert_ok!(Whitelist::remove_deferred_dispatch(RuntimeOrigin::signed(1), call_hash));
+
+		// Removing a deferred entry only drops the deferral — the whitelist and its preimage
+		// request are left intact.
+		assert!(!crate::DeferredDispatch::<Test>::contains_key(call_hash));
+		assert!(crate::WhitelistedCall::<Test>::contains_key(call_hash));
+		assert!(Preimage::is_requested(&call_hash));
 	});
 }

@@ -52,6 +52,11 @@ use scale_info::TypeInfo;
 
 pub use pallet::*;
 
+/// Block number as seen by [`Config::BlockNumberProvider`].
+///
+/// Deferral expirations are tracked against this provider rather than the local system block,
+/// so on a parachain it can be the relay chain block number. All `DeferredDispatch` `expire_at`
+/// values and the [`Config::DeferredDispatchExpiration`] window are denominated in it.
 pub type ProvidedBlockNumberFor<T> =
 	<<T as Config>::BlockNumberProvider as BlockNumberProvider>::BlockNumber;
 
@@ -144,7 +149,7 @@ pub mod pallet {
 		DeferredDispatchNotFound,
 		/// The deferred dispatch entry has not yet expired.
 		DeferredDispatchNotExpired,
-		/// The dispatch has been defered
+		/// The dispatch has already been deferred.
 		AlreadyDeferred,
 		/// The deferred dispatch has expired.
 		DeferredDispatchExpired,
@@ -153,18 +158,11 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type WhitelistedCall<T: Config> = StorageMap<_, Twox64Concat, T::Hash, (), OptionQuery>;
 
+	/// Deferred dispatches, mapping a call hash to the provided block number at which the deferral
+	/// expires and the entry can be permissionlessly removed.
 	#[pallet::storage]
 	pub type DeferredDispatch<T: Config> =
-		StorageMap<_, Twox64Concat, T::Hash, DeferredEntry<T>, OptionQuery>;
-
-	#[derive(Encode, Decode, TypeInfo, MaxEncodedLen)]
-	#[scale_info(skip_type_params(T))]
-	pub struct DeferredEntry<T: Config> {
-		/// Provided block number when this deferred dispatch expires
-		pub expire_at: ProvidedBlockNumberFor<T>,
-		/// Encoded length of the call (for weight calculation)
-		pub call_encoded_len: u32,
-	}
+		StorageMap<_, Twox64Concat, T::Hash, ProvidedBlockNumberFor<T>, OptionQuery>;
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -213,10 +211,8 @@ pub mod pallet {
 			let relayer = match T::DispatchWhitelistedOrigin::try_origin(origin) {
 				Ok(_) if WhitelistedCall::<T>::contains_key(call_hash) => None,
 				Ok(_) => {
-					Self::defer_dispatch(call_hash, call_encoded_len)?;
-					return Ok(
-						Some(T::WeightInfo::dispatch_whitelisted_call(call_encoded_len)).into()
-					);
+					Self::defer_dispatch(call_hash)?;
+					return Ok(Some(T::WeightInfo::defer_dispatch()).into());
 				},
 				Err(dispatch_origin) => {
 					Some(Self::ensure_signed_deferred_dispatch(dispatch_origin, call_hash)?)
@@ -265,11 +261,8 @@ pub mod pallet {
 			let relayer = match T::DispatchWhitelistedOrigin::try_origin(origin) {
 				Ok(_) if WhitelistedCall::<T>::contains_key(call_hash) => None,
 				Ok(_) => {
-					Self::defer_dispatch(call_hash, call_len)?;
-					return Ok(Some(T::WeightInfo::dispatch_whitelisted_call_with_preimage(
-						call_len,
-					))
-					.into());
+					Self::defer_dispatch(call_hash)?;
+					return Ok(Some(T::WeightInfo::defer_dispatch()).into());
 				},
 				Err(dispatch_origin) => {
 					Some(Self::ensure_signed_deferred_dispatch(dispatch_origin, call_hash)?)
@@ -295,12 +288,12 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			ensure_signed(origin)?;
 
-			let deferred_entry = DeferredDispatch::<T>::get(call_hash)
+			let expire_at = DeferredDispatch::<T>::get(call_hash)
 				.ok_or(Error::<T>::DeferredDispatchNotFound)?;
 
 			let now = T::BlockNumberProvider::current_block_number();
 
-			ensure!(now >= deferred_entry.expire_at, Error::<T>::DeferredDispatchNotExpired);
+			ensure!(now >= expire_at, Error::<T>::DeferredDispatchNotExpired);
 
 			DeferredDispatch::<T>::remove(call_hash);
 
@@ -316,14 +309,14 @@ impl<T: Config> Pallet<T> {
 	///
 	/// This function stores the call hash for later execution by any signed origin
 	/// before the expiration block.
-	fn defer_dispatch(call_hash: T::Hash, call_encoded_len: u32) -> DispatchResult {
+	fn defer_dispatch(call_hash: T::Hash) -> DispatchResult {
 		let now = T::BlockNumberProvider::current_block_number();
 
 		let expire_at = now.saturating_add(T::DeferredDispatchExpiration::get());
 
 		ensure!(!DeferredDispatch::<T>::contains_key(call_hash), Error::<T>::AlreadyDeferred);
 
-		DeferredDispatch::<T>::insert(call_hash, DeferredEntry { expire_at, call_encoded_len });
+		DeferredDispatch::<T>::insert(call_hash, expire_at);
 
 		Self::deposit_event(Event::<T>::DispatchDeferred { call_hash });
 
@@ -349,11 +342,11 @@ impl<T: Config> Pallet<T> {
 	) -> Result<T::AccountId, DispatchError> {
 		let who = ensure_signed(origin)?;
 
-		let entry =
+		let expire_at =
 			DeferredDispatch::<T>::get(call_hash).ok_or(Error::<T>::DeferredDispatchNotFound)?;
 
 		ensure!(
-			T::BlockNumberProvider::current_block_number() < entry.expire_at,
+			T::BlockNumberProvider::current_block_number() < expire_at,
 			Error::<T>::DeferredDispatchExpired
 		);
 

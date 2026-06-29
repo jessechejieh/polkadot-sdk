@@ -370,6 +370,9 @@ mod benchmarks {
 				*expire_at = BlockNumberFor::<T, I>::zero();
 			}
 		});
+		// Relay-block providers (e.g. asset-hub) report 0 at genesis; advance so the zeroed order
+		// expiration is in the past.
+		T::BlockNumberProvider::set_block_number(One::one());
 
 		// Worst case: a near-full queue, so rotation scans it, re-inserts the expired head, and
 		// promotes the front. Leave one slot free for the re-insert.

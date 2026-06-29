@@ -1068,7 +1068,7 @@ fn spend_auto_enqueues_to_payout_queue() {
 		// Create a spend - should be automatically added to payout queue
 		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(6), None));
 		// Check queue state - spend should be NextPayout since queue was empty
-		assert_eq!(NextPayout::<Test>::get(1u32), Some((0, 3))); // now + OrderExpirationPeriod
+		assert_eq!(NextPayout::<Test>::get(1u32), Some((0, 1, 3))); // (index, order_key, expire_at = now + OrderExpirationPeriod)
 
 		// Queue should be empty since this was the first spend
 		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![]);
@@ -1103,11 +1103,12 @@ fn multiple_spends_auto_enqueue_in_sorted_order() {
 			Some(7)
 		));
 
-		// First spend should be NextPayout
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+		// Spend 1 has the earliest order key (3), so it preempts the head; spends 0 and 2 sit in
+		// the queue sorted by order key.
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
 
 		let queue = PayoutQueue::<Test>::get(1u32);
-		assert_eq!(queue, vec![(1, 3), (2, 7)]);
+		assert_eq!(queue, vec![(0, 5), (2, 7)]);
 	});
 }
 
@@ -1142,8 +1143,8 @@ fn different_assets_have_independent_queues() {
 		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(150), None));
 
 		// Each asset should have its own NextPayout
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
-		assert_eq!(NextPayout::<Test>::get(2u32).map(|(idx, _)| idx), Some(1));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
+		assert_eq!(NextPayout::<Test>::get(2u32).map(|(idx, _, _)| idx), Some(1));
 
 		// Asset 1 queue should have spend 2
 		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(2, 1)]);
@@ -1167,7 +1168,7 @@ fn check_status_rotates_expired_order() {
 		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(200), None));
 
 		// Verify initial state
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
 
 		// Move past order expiration
 		System::set_block_number(4);
@@ -1177,7 +1178,7 @@ fn check_status_rotates_expired_order() {
 		assert_eq!(info.pays_fee, Pays::No);
 
 		// Queue should be rotated: spend 0 moved to back with `now` as its order key
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
 		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 4)]);
 
 		System::assert_last_event(
@@ -1205,7 +1206,7 @@ fn rotated_spend_keeps_queue_sorted_and_passes_try_state() {
 			Some(10)
 		));
 
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
 		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(1, 1), (2, 10)]);
 
 		// Move past the head's order expiration and rotate it
@@ -1216,7 +1217,7 @@ fn rotated_spend_keeps_queue_sorted_and_passes_try_state() {
 		// The rotated spend is re-inserted with `now` (4) as its order key, which places it
 		// behind every mature spend but ahead of the not-yet-mature one, keeping the queue
 		// sorted. Spend 1 is promoted to NextPayout.
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
 		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 4), (2, 10)]);
 
 		// The sortedness invariant must hold after the rotation
@@ -1240,7 +1241,7 @@ fn check_status_does_not_rotate_if_not_expired() {
 		);
 
 		// State should be unchanged
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
 	});
 }
 
@@ -1262,7 +1263,7 @@ fn check_status_removes_completed_spend_and_promotes_next() {
 		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0));
 
 		// Spend 1 should now be NextPayout
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
 		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![]);
 	});
 }
@@ -1280,7 +1281,7 @@ fn void_spend_removes_from_queue_and_promotes_next() {
 		assert_ok!(Treasury::void_spend(RuntimeOrigin::root(), 0));
 
 		// Spend 1 should now be NextPayout
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
 		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![]);
 
 		// Spend 0 should be removed
@@ -1299,7 +1300,7 @@ fn fifo_ordering_enforced_per_asset() {
 		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(300), None));
 
 		// Payout should be in FIFO order
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
 
 		// Payout spend 0
 		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
@@ -1308,7 +1309,7 @@ fn fifo_ordering_enforced_per_asset() {
 		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0));
 
 		// Next should be spend 1
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
 
 		// Payout spend 1
 		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 1));
@@ -1317,7 +1318,7 @@ fn fifo_ordering_enforced_per_asset() {
 		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 1));
 
 		// Next should be spend 2
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(2));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(2));
 
 		// Verify beneficiaries received in order
 		assert_eq!(paid(100, 1), 1);
@@ -1389,7 +1390,7 @@ fn complex_scenario_with_rotation_and_completion() {
 		assert_eq!(info.pays_fee, Pays::No);
 
 		// Spend 2 should now be NextPayout
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(2));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(2));
 		assert_ok!(Treasury::do_try_state());
 
 		// Payout spend 2
@@ -1399,7 +1400,7 @@ fn complex_scenario_with_rotation_and_completion() {
 		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 2));
 
 		// Spend 1 should be back at head after rotation
-		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
 
 		// Retry spend 1
 		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 1));
@@ -1439,7 +1440,7 @@ fn try_state_payout_queue_invariants() {
 
 		// Verify queue is sorted
 		let queue = PayoutQueue::<Test>::get(1u32);
-		assert_eq!(queue, vec![(1, 3), (2, 7)]);
+		assert_eq!(queue, vec![(0, 5), (2, 7)]);
 	});
 }
 
@@ -1463,5 +1464,248 @@ fn early_spend_cannot_be_paid_before_valid_from() {
 		// Move to valid_from block
 		System::set_block_number(10);
 		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
+	});
+}
+
+#[test]
+fn preemption_earlier_maturing_spend_takes_head() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(10);
+
+		// Spend 0 matures far in the future and, with an empty queue, becomes the head.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(100),
+			Some(100)
+		));
+		// Spend 1 is approved later but matures now, so its earlier order key (10 < 100) preempts
+		// the head; the far-future spend is demoted into the queue.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(200),
+			Some(10)
+		));
+
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 100)]);
+
+		// The preempting spend is already mature, so it is payable immediately.
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 1));
+		assert_eq!(paid(200, 1), 1);
+	});
+}
+
+#[test]
+fn order_key_clamp_prevents_backdated_overtaking() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(5);
+
+		// Spend 0 is already mature; its order key clamps to now (5) and it becomes the head.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(100),
+			Some(3)
+		));
+		// Spend 1 has an earlier valid_from (1) but is approved later (both still within the payout
+		// window). Its order key also clamps to 5, so it does NOT overtake the already-mature head
+		// — it queues behind it rather than back-dating its way to the front.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(200),
+			Some(1)
+		));
+
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(1, 5)]);
+	});
+}
+
+#[test]
+fn preemption_among_not_yet_mature_spends() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(5);
+
+		// Spend 0 matures at 100 and becomes the head.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(100),
+			Some(100)
+		));
+		// Spend 1 matures earlier (50); while both are still in the future it preempts the head.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(200),
+			Some(50)
+		));
+
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 100)]);
+
+		// Neither is payable yet: the head has not matured and the other is not the head.
+		assert_noop!(Treasury::payout(RuntimeOrigin::signed(1), 1), Error::<Test, _>::EarlyPayout);
+		assert_noop!(
+			Treasury::payout(RuntimeOrigin::signed(1), 0),
+			Error::<Test, _>::NotNextPayout
+		);
+	});
+}
+
+#[test]
+fn preempt_into_full_queue_fails_with_queue_full() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(10);
+		let max = <Test as Config>::MaxQueuedSpends::get();
+
+		// A head with a far-future order key, so a later spend can preempt it.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(0),
+			Some(2000)
+		));
+
+		// Fill the queue to capacity with spends that mature after the head, so they line up behind
+		// it without preempting.
+		for i in 0..max {
+			assert_ok!(Treasury::spend(
+				RuntimeOrigin::signed(10),
+				Box::new(1),
+				1,
+				Box::new((i + 1) as u128),
+				Some(3000 + i as u64),
+			));
+		}
+
+		// A mature spend preempts the head, which demotes the old head into the queue. Unlike
+		// rotation, preemption adds a spend, so with the queue already full there is no room and
+		// the call must fail rather than exceed the bound.
+		assert_noop!(
+			Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(9999), Some(10)),
+			Error::<Test, _>::QueueFull
+		);
+	});
+}
+
+#[test]
+fn mature_spend_is_paid_before_far_future_head() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(10);
+
+		// A far-future spend is approved first and is initially the head.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(100),
+			Some(5000)
+		));
+		// A later-approved but already-mature spend.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(200),
+			Some(10)
+		));
+
+		// The mature spend preempts the head and is paid first; the far-future spend waits in the
+		// queue rather than blocking it.
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 1));
+		assert_eq!(paid(200, 1), 1);
+		assert_noop!(
+			Treasury::payout(RuntimeOrigin::signed(1), 0),
+			Error::<Test, _>::NotNextPayout
+		);
+	});
+}
+
+// Rotation is size-neutral (demote the head, promote one entry), so it must succeed even when the
+// queue is full. Otherwise the expired head can never be rotated and stays stuck as `NextPayout`.
+#[test]
+fn rotate_payout_queue_does_not_deadlock_when_queue_is_full() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		let max = <Test as Config>::MaxQueuedSpends::get();
+		// One head + `MaxQueuedSpends` queued fills the queue exactly. All created at block 1 with
+		// `valid_from = None`, so every order key is `1` and the head's order expires at
+		// `1 + OrderExpirationPeriod`. Root origin avoids the per-origin spend budget.
+		for i in 0..=max {
+			assert_ok!(Treasury::spend(
+				RuntimeOrigin::root(),
+				Box::new(1),
+				1,
+				Box::new(i as u128),
+				None
+			));
+		}
+		assert_eq!(PayoutQueue::<Test>::get(1u32).len() as u32, max);
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
+
+		// Move past the head's order expiration so `check_status` rotates it.
+		System::set_block_number(4);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0));
+
+		// Head rotated to the back, spend 1 promoted; queue size unchanged.
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
+		let queue = PayoutQueue::<Test>::get(1u32);
+		assert_eq!(queue.len() as u32, max);
+		assert_eq!(queue.last(), Some(&(0, 4)));
+		assert_ok!(Treasury::do_try_state());
+	});
+}
+
+// When a new spend preempts the head, the demoted head must be placed ahead of queue entries that
+// share its order key, since it was approved before them.
+#[test]
+fn head_preemption_preserves_fifo_among_equal_order_keys() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+
+		// Spend 0 becomes the head with order_key = max(1, 20) = 20.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(100),
+			Some(20)
+		));
+		// Spend 1 has the same order_key 20 (not strictly earlier), so it joins the queue.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(200),
+			Some(20)
+		));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(1, 20)]);
+
+		// Spend 2 matures strictly earlier (order_key = max(1, 15) = 15 < 20) and preempts the
+		// head. The demoted head (index 0) was approved before spend 1 and shares order_key 20, so
+		// FIFO requires it ahead of spend 1.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(300),
+			Some(15)
+		));
+
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(2));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 20), (1, 20)]);
 	});
 }

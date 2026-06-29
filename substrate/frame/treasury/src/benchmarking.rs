@@ -342,6 +342,50 @@ mod benchmarks {
 		Ok(())
 	}
 
+	// The rotation branch of `check_status`: a head whose payout order has expired is rotated to
+	// the back of a (near) full queue and the front entry is promoted. Benchmarked separately so
+	// `check_status`'s declared weight can be `check_status().max(check_status_rotation())`.
+	#[benchmark]
+	fn check_status_rotation() -> Result<(), BenchmarkError> {
+		let origin =
+			T::SpendOrigin::try_successful_origin().map_err(|_| BenchmarkError::Weightless)?;
+		let (asset_kind, amount, _, beneficiary_lookup) = create_spend_arguments::<T, _>(SEED);
+		T::BalanceConverter::ensure_successful(asset_kind.clone());
+		let caller: T::AccountId = account("caller", 0, SEED);
+
+		// The spend becomes NextPayout (queue empty), status Pending.
+		Treasury::<T, _>::spend(
+			origin,
+			Box::new(asset_kind.clone()),
+			amount,
+			Box::new(beneficiary_lookup),
+			None,
+		)?;
+
+		// Force the head's payout order to be already expired (order `expire_at` of zero is `<
+		// now`) while its spend payout window stays open, so `check_status` takes the rotation
+		// branch.
+		NextPayout::<T, I>::mutate(&asset_kind, |entry| {
+			if let Some((_, _, expire_at)) = entry {
+				*expire_at = BlockNumberFor::<T, I>::zero();
+			}
+		});
+
+		// Worst case: a near-full queue, so rotation scans it, re-inserts the expired head, and
+		// promotes the front. Leave one slot free for the re-insert.
+		fill_payout_queue::<T, I>(asset_kind.clone(), T::MaxQueuedSpends::get().saturating_sub(1));
+
+		#[block]
+		{
+			assert_ok!(Treasury::<T, _>::check_status(RawOrigin::Signed(caller).into(), 0u32));
+		}
+
+		// The expired head (index 0) was rotated to the back; a queued spend is now NextPayout.
+		assert!(matches!(NextPayout::<T, I>::get(&asset_kind), Some((idx, _, _)) if idx != 0));
+		assert_last_event::<T, I>(Event::PayoutQueueRotated { asset_kind, index: 0 }.into());
+		Ok(())
+	}
+
 	#[benchmark]
 	fn void_spend() -> Result<(), BenchmarkError> {
 		let (asset_kind, amount, _, beneficiary_lookup) = create_spend_arguments::<T, _>(SEED);

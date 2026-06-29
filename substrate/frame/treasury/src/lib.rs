@@ -1052,9 +1052,11 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 			// install the new spend as the head.
 			Some((head_index, head_order_key, _)) if order_key < head_order_key => {
 				let mut queue = PayoutQueue::<T, I>::get(&asset_kind);
+				// Insert the demoted head ahead of queue entries that share its order key: it was
+				// approved before them, so it keeps its place among equal-maturity spends.
 				let insert_pos = queue
 					.iter()
-					.position(|(_, order_key)| *order_key > head_order_key)
+					.position(|(_, order_key)| *order_key >= head_order_key)
 					.unwrap_or(queue.len());
 				queue
 					.try_insert(insert_pos, (head_index, head_order_key))
@@ -1125,29 +1127,28 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 	fn rotate_payout_queue(asset_kind: &T::AssetKind) -> DispatchResult {
 		let (current_index, _, _) =
 			NextPayout::<T, I>::get(asset_kind).ok_or(Error::<T, I>::NotNextPayout)?;
-		let mut queue = PayoutQueue::<T, I>::get(asset_kind);
 		let now = T::BlockNumberProvider::current_block_number();
+
+		// Rotation is size-neutral: it re-inserts the expired head and promotes one entry from the
+		// front, so the queue length never changes.
+		let mut queue = PayoutQueue::<T, I>::get(asset_kind).into_inner();
 
 		// Re-insert the expired spend with `now` as its order key, keeping the queue sorted.
 		// Using `now` (rather than the spend's `valid_from`) sends the rotated spend behind
 		// every entry that is already mature, while preserving the sort order.
 		let insert_pos =
 			queue.iter().position(|(_, order_key)| *order_key > now).unwrap_or(queue.len());
-		queue
-			.try_insert(insert_pos, (current_index, now))
+		queue.insert(insert_pos, (current_index, now));
+
+		// Promote the front to NextPayout and remove it. The queue is guaranteed non-empty here
+		// because we just inserted into it, so there is always something to promote.
+		let (new_next, order_key) = queue.remove(0);
+		let new_expire_at = now.max(order_key).saturating_add(T::OrderExpirationPeriod::get());
+		NextPayout::<T, I>::insert(asset_kind, (new_next, order_key, new_expire_at));
+
+		// Net length is unchanged (one inserted, one removed), so it still fits the bound.
+		let queue = BoundedVec::<_, T::MaxQueuedSpends>::try_from(queue)
 			.map_err(|_| Error::<T, I>::QueueFull)?;
-
-		// Promote the front of queue to NextPayout and remove it from queue
-		if let Some(&(new_next, order_key)) = queue.first() {
-			let new_expire_at = now.max(order_key).saturating_add(T::OrderExpirationPeriod::get());
-			NextPayout::<T, I>::insert(asset_kind, (new_next, order_key, new_expire_at));
-			// Remove the promoted entry from queue since it's now NextPayout
-			queue.remove(0);
-		} else {
-			// Queue was empty after pushing, clear NextPayout
-			NextPayout::<T, I>::remove(asset_kind);
-		}
-
 		PayoutQueue::<T, I>::insert(asset_kind, queue);
 		Ok(())
 	}
@@ -1376,14 +1377,21 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 				);
 			}
 
-			// All items in queue must be valid pending spends
+			// Every queued spend is awaiting payout. In steady state that means `Pending` or
+			// `Failed`, but the migration can also seed an in-flight `Attempted` spend into the
+			// queue (so a later payment failure can still be retried rather than lost), which
+			// `check_status` then resolves.
 			for (spend_index, _) in queue.iter() {
 				let spend = Spends::<T, I>::get(spend_index).ok_or(
 					sp_runtime::TryRuntimeError::Other("Spend in queue must exist in Spends."),
 				)?;
 				ensure!(
-					matches!(spend.status, PaymentState::Pending | PaymentState::Failed),
-					"Spend in queue must have Pending or Failed status."
+					matches!(
+						spend.status,
+						PaymentState::Pending |
+							PaymentState::Failed | PaymentState::Attempted { .. }
+					),
+					"Spend in queue must have Pending, Failed or Attempted status."
 				);
 				// Verify asset kind matches
 				ensure!(spend.asset_kind == asset_kind, "Spend in queue has wrong asset kind.");

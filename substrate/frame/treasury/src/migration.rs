@@ -159,26 +159,25 @@ mod migrate_to_ordered_payouts {
 			for (index, spend) in Spends::<T, I>::iter() {
 				total_spends_read += 1;
 				match spend.status {
-					PaymentState::Pending | PaymentState::Failed => {
-						// Only include spends that haven't expired
-						if spend.expire_at > now {
-							spends_vec.push((spend.asset_kind, index, spend.valid_from));
-						} else {
-							log::debug!(
-								target: LOG_TARGET,
-								"Skipping expired spend {} (expire_at: {:?}, now: {:?})",
-								index,
-								spend.expire_at,
-								now,
-							);
-						}
-					},
-					PaymentState::Attempted { .. } => {
+					// Expired `Pending`/`Failed` spends are dropped, matching `check_status`, which
+					// removes them once `now > expire_at`.
+					PaymentState::Pending | PaymentState::Failed if spend.expire_at <= now => {
 						log::debug!(
 							target: LOG_TARGET,
-							"Skipping attempted spend {}",
+							"Skipping expired spend {} (expire_at: {:?}, now: {:?})",
 							index,
+							spend.expire_at,
+							now,
 						);
+					},
+					// Every other live spend is ordered, including in-flight `Attempted` ones. An
+					// `Attempted` spend whose payment later fails would otherwise be left out of
+					// the payout order and could never be retried (lost); keeping it ordered
+					// lets `check_status` resolve it and, on failure, promote/retry it. This
+					// mirrors `check_status`, which never drops an `Attempted` spend on
+					// expiration.
+					_ => {
+						spends_vec.push((spend.asset_kind, index, spend.valid_from));
 					},
 				}
 			}
@@ -276,52 +275,89 @@ mod migrate_to_ordered_payouts {
 
 		#[cfg(feature = "try-runtime")]
 		fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
-			let pending_spends: Vec<(T::AssetKind, SpendIndex)> = Spends::<T, I>::iter()
-				.filter_map(|(index, spend)| match spend.status {
-					PaymentState::Pending | PaymentState::Failed => Some((spend.asset_kind, index)),
-					_ => None,
-				})
-				.collect();
+			let now = T::BlockNumberProvider::current_block_number();
 
-			log::info!(
-				target: LOG_TARGET,
-				"Pre-upgrade: {} pending/failed spends",
-				pending_spends.len()
-			);
+			// Spends the migration will order, using the same inclusion rule as
+			// `on_runtime_upgrade` (every live spend, plus in-flight `Attempted` ones regardless
+			// of expiration), and the per-asset counts.
+			let mut migrated: Vec<(T::AssetKind, SpendIndex)> = Vec::new();
+			let mut per_asset: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+			for (index, spend) in Spends::<T, I>::iter() {
+				let include = match spend.status {
+					PaymentState::Pending | PaymentState::Failed => spend.expire_at > now,
+					PaymentState::Attempted { .. } => true,
+				};
+				if include {
+					*per_asset.entry(spend.asset_kind.encode()).or_default() += 1;
+					migrated.push((spend.asset_kind, index));
+				}
+			}
 
-			Ok(pending_spends.encode())
-		}
-
-		#[cfg(feature = "try-runtime")]
-		fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
-			let pre_pending_spends: Vec<(T::AssetKind, SpendIndex)> =
-				Vec::decode(&mut &state[..]).expect("Known good");
-
-			let mut post_queue_count = 0usize;
-			for (_, queue) in PayoutQueue::<T, I>::iter() {
-				post_queue_count += queue.len();
+			// The migration places one spend at `NextPayout` and the rest in the queue (bounded by
+			// `MaxQueuedSpends`). If an asset has more live spends than that capacity, the
+			// migration would silently drop the overflow — fail here so the runtime raises
+			// `MaxQueuedSpends` before deploying instead.
+			let capacity = T::MaxQueuedSpends::get().saturating_add(1);
+			for (_, count) in per_asset.iter() {
+				ensure!(
+					*count <= capacity,
+					"MaxQueuedSpends too small: an asset has more live spends than NextPayout + queue can hold."
+				);
 			}
 
 			log::info!(
 				target: LOG_TARGET,
-				"Post-upgrade: {} spends in queues (pre-upgrade had {} pending)",
-				post_queue_count,
-				pre_pending_spends.len()
+				"Pre-upgrade: {} spends to order across {} asset kinds",
+				migrated.len(),
+				per_asset.len(),
 			);
 
-			// Verify queue invariants for each asset kind
+			Ok(migrated.encode())
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+			let pre_migrated: Vec<(T::AssetKind, SpendIndex)> =
+				Vec::decode(&mut &state[..]).expect("Known good");
+
+			// Every spend the migration intended to order must land in exactly one of `NextPayout`
+			// or `PayoutQueue` — nothing silently dropped (the `pre_upgrade` capacity check
+			// guarantees this; verify it here).
+			let mut post_ordered_count = 0usize;
+			for (_, queue) in PayoutQueue::<T, I>::iter() {
+				post_ordered_count += queue.len();
+			}
+			post_ordered_count += NextPayout::<T, I>::iter().count();
+
+			log::info!(
+				target: LOG_TARGET,
+				"Post-upgrade: {} spends ordered (pre-upgrade had {} to order)",
+				post_ordered_count,
+				pre_migrated.len()
+			);
+			ensure!(
+				post_ordered_count == pre_migrated.len(),
+				"Migration dropped spends: ordered count does not match pre-upgrade count."
+			);
+
+			// Verify queue invariants for each asset kind.
 			for (asset_kind, queue) in PayoutQueue::<T, I>::iter() {
 				ensure!(
 					queue.len() as u32 <= T::MaxQueuedSpends::get(),
 					"Queue length exceeds MaxQueuedSpends"
 				);
 
-				// Verify all items in queue are valid pending spends
+				// A queued spend is awaiting payout, so it may be `Pending`, `Failed`, or an
+				// in-flight `Attempted` carried over by the migration.
 				for (index, _) in queue.iter() {
 					let spend = Spends::<T, I>::get(index)
 						.ok_or(sp_runtime::TryRuntimeError::Other("Spend in queue not found"))?;
 					ensure!(
-						matches!(spend.status, PaymentState::Pending | PaymentState::Failed),
+						matches!(
+							spend.status,
+							PaymentState::Pending |
+								PaymentState::Failed | PaymentState::Attempted { .. }
+						),
 						"Spend in queue has invalid status"
 					);
 					ensure!(spend.asset_kind == asset_kind, "Spend in queue has wrong asset kind");
@@ -395,15 +431,18 @@ mod migrate_to_ordered_payouts {
 		}
 
 		#[test]
-		fn migration_skips_attempted_spends() {
+		fn migration_includes_attempted_spends() {
 			ExtBuilder::default().build().execute_with(|| {
 				System::set_block_number(100);
 
+				// An in-flight `Attempted` spend must stay in the payout order so a later payment
+				// failure can be retried rather than lost.
 				insert_spend(0, 1, 100, 1000, 50, 200, PaymentState::Attempted { id: 123u64 });
 
 				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
-				assert!(NextPayout::<Test>::get(1u32).is_none());
+				// Only spend → becomes NextPayout (order key = max(now=100, valid_from=50) = 100).
+				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
 				assert_eq!(PayoutQueue::<Test>::get(1u32).len(), 0);
 			});
 		}
@@ -436,15 +475,15 @@ mod migrate_to_ordered_payouts {
 				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				// Asset 1: First spend is NextPayout
-				let (next_idx, expire_at) = NextPayout::<Test>::get(1u32).unwrap();
+				let (next_idx, _order_key, expire_at) = NextPayout::<Test>::get(1u32).unwrap();
 				assert_eq!(next_idx, 0);
 				assert_eq!(expire_at, 102); // 100 + OrderExpirationPeriod(2)
 
-				// Asset 1 queue: spend 1
-				assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(1, 60)]);
+				// Asset 1 queue: spend 1 (mature at now=100, so order key clamps to 100)
+				assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(1, 100)]);
 
 				// Asset 2: Spend 2 is NextPayout
-				assert_eq!(NextPayout::<Test>::get(2u32).map(|(idx, _)| idx), Some(2));
+				assert_eq!(NextPayout::<Test>::get(2u32).map(|(idx, _, _)| idx), Some(2));
 				assert_eq!(PayoutQueue::<Test>::get(2u32).len(), 0);
 			});
 		}
@@ -452,7 +491,9 @@ mod migrate_to_ordered_payouts {
 		#[test]
 		fn migration_sorts_by_valid_from() {
 			ExtBuilder::default().build().execute_with(|| {
-				System::set_block_number(100);
+				// Block is before every `valid_from`, so the order-key clamp is a no-op and spends
+				// order by maturity (`valid_from`).
+				System::set_block_number(40);
 
 				// Insert out of order
 				insert_spend(0, 1, 100, 1000, 100, 200, PaymentState::Pending); // latest
@@ -462,7 +503,7 @@ mod migrate_to_ordered_payouts {
 				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				// Sorted: 1 (50), 2 (75), 0 (100)
-				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(1));
+				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
 				assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(2, 75), (0, 100)]);
 			});
 		}
@@ -470,7 +511,9 @@ mod migrate_to_ordered_payouts {
 		#[test]
 		fn migration_tie_breaks_by_index() {
 			ExtBuilder::default().build().execute_with(|| {
-				System::set_block_number(100);
+				// Block before `valid_from`, so order keys equal `valid_from` and only the
+				// index tie-break is exercised.
+				System::set_block_number(40);
 
 				// Same valid_from, different indices (inserted out of order)
 				insert_spend(5, 1, 100, 1000, 50, 200, PaymentState::Pending);
@@ -480,7 +523,7 @@ mod migrate_to_ordered_payouts {
 				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				// Sorted by index: 3, 4, 5
-				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(3));
+				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(3));
 				assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(4, 50), (5, 50)]);
 			});
 		}
@@ -506,7 +549,7 @@ mod migrate_to_ordered_payouts {
 				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				// NextPayout is index 0
-				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
+				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
 
 				// Queue capped at 100
 				let queue = PayoutQueue::<Test>::get(1u32);
@@ -528,9 +571,11 @@ mod migrate_to_ordered_payouts {
 
 				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
-				// Only 0 and 1 in queue
-				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _)| idx), Some(0));
-				assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(1, 51)]);
+				// Pending (0), Failed (1) and the in-flight Attempted (2) are ordered; the expired
+				// Pending (3) is dropped. All are mature at `now = 100`, so order keys clamp to 100
+				// and ties break by index.
+				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
+				assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(1, 100), (2, 100)]);
 			});
 		}
 
@@ -545,9 +590,11 @@ mod migrate_to_ordered_payouts {
 				let state = MigrateToOrderedPayouts::<Test>::pre_upgrade().unwrap();
 				let decoded: Vec<(u32, u32)> = Vec::decode(&mut &state[..]).unwrap();
 
-				assert_eq!(decoded.len(), 2);
+				// All three are ordered by the migration, including the in-flight Attempted spend.
+				assert_eq!(decoded.len(), 3);
 				assert!(decoded.contains(&(1, 0)));
 				assert!(decoded.contains(&(1, 1)));
+				assert!(decoded.contains(&(1, 2)));
 			});
 		}
 
@@ -579,7 +626,7 @@ mod migrate_to_ordered_payouts {
 
 				// Create invalid state: NextPayout in queue
 				insert_spend(0, 1, 100, 1000, 50, 200, PaymentState::Pending);
-				NextPayout::<Test>::insert(1u32, (0u32, 102u64));
+				NextPayout::<Test>::insert(1u32, (0u32, 100u64, 102u64));
 
 				let bounded_vec: BoundedVec<(u32, u64), crate::tests::MaxQueuedSpends> =
 					vec![(0u32, 50u64)].try_into().unwrap();

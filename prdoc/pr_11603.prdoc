@@ -9,8 +9,9 @@ doc:
     Two new storage items are introduced: `NextPayout`, holding the spend currently at the head of
     the payout order for each asset kind together with its order expiration block, and
     `PayoutQueue`, a bounded vector of `(spend_index, order_key)` entries per asset kind sorted by
-    order key. The order key is the spend's `valid_from` for newly inserted spends and the block
-    number of the rotation for spends rotated to the back after their order expired.
+    order key. The order key is `max(now, valid_from)` for newly inserted spends, so a later
+    approval never overtakes an already-mature spend, and the block number of the rotation for
+    spends rotated to the back after their order expired.
 
     No new extrinsics are added; ordering is enforced transparently through the existing calls:
 
@@ -41,4 +42,8 @@ crates:
 - name: collectives-westend-runtime
   bump: minor
 - name: kitchensink-runtime
+  bump: minor
+- name: pallet-staking-async-parachain-runtime
+  bump: minor
+- name: pallet-staking-async-rc-runtime
   bump: minor

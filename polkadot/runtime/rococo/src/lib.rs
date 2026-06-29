@@ -533,8 +533,8 @@ parameter_types! {
 	pub const MaxKeys: u32 = 10_000;
 	pub const MaxPeerInHeartbeats: u32 = 10_000;
 	pub const MaxBalance: Balance = Balance::max_value();
-    pub const MaxQueuedSpends: u32 = 100;
-    pub const OrderExpirationPeriod: BlockNumber = 2 * DAYS;
+	pub const MaxQueuedSpends: u32 = 100;
+	pub const OrderExpirationPeriod: BlockNumber = 2 * DAYS;
 }
 
 impl pallet_treasury::Config for Runtime {
@@ -573,8 +573,8 @@ impl pallet_treasury::Config for Runtime {
 	>;
 	type PayoutPeriod = PayoutSpendPeriod;
 	type BlockNumberProvider = System;
-    type MaxQueuedSpends = MaxQueuedSpends;
-    type OrderExpirationPeriod = OrderExpirationPeriod;
+	type MaxQueuedSpends = MaxQueuedSpends;
+	type OrderExpirationPeriod = OrderExpirationPeriod;
 	#[cfg(feature = "runtime-benchmarks")]
 	type BenchmarkHelper = polkadot_runtime_common::impls::benchmarks::TreasuryArguments;
 }

@@ -18,7 +18,6 @@
 //! THIS FILE WAS AUTO-GENERATED USING THE SUBSTRATE BENCHMARK CLI VERSION 32.0.0
 //! DATE: 2026-06-12, STEPS: `50`, REPEAT: `20`, LOW RANGE: `[]`, HIGH RANGE: `[]`
 //! WORST CASE MAP SIZE: `1000000`
-//! HOSTNAME: `22cd7d3cce09`, CPU: `Intel(R) Xeon(R) CPU @ 2.60GHz`
 //! WASM-EXECUTION: `Compiled`, CHAIN: `None`, DB CACHE: 1024
 
 // Executed Command:
@@ -170,6 +169,16 @@ impl<T: frame_system::Config> pallet_treasury::WeightInfo for WeightInfo<T> {
 	/// Storage: `Treasury::PayoutQueue` (r:1 w:1)
 	/// Proof: `Treasury::PayoutQueue` (`max_values`: None, `max_size`: Some(2016), added: 4491, mode: `MaxEncodedLen`)
 	fn check_status() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `1112`
+		//  Estimated: `5921`
+		// Minimum execution time: 35_815_000 picoseconds.
+		Weight::from_parts(38_194_000, 0)
+			.saturating_add(Weight::from_parts(0, 5921))
+			.saturating_add(T::DbWeight::get().reads(5))
+			.saturating_add(T::DbWeight::get().writes(3))
+	}
+	fn check_status_rotation() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `1112`
 		//  Estimated: `5921`

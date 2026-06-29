@@ -867,7 +867,7 @@ pub mod pallet {
 		/// Emits [`Event::SpendProcessed`] if the spend payout has succeed.
 		/// Emits [`Event::PayoutQueueRotated`] if the queue was rotated due to expiration.
 		#[pallet::call_index(7)]
-		#[pallet::weight(T::WeightInfo::check_status())]
+		#[pallet::weight(T::WeightInfo::check_status().max(T::WeightInfo::check_status_rotation()))]
 		pub fn check_status(origin: OriginFor<T>, index: SpendIndex) -> DispatchResultWithPostInfo {
 			use PaymentState as State;
 			use PaymentStatus as Status;

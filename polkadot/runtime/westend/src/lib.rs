@@ -986,9 +986,9 @@ impl pallet_treasury::Config for Runtime {
 		AssetRate,
 	>;
 	type PayoutPeriod = PayoutSpendPeriod;
-  type BlockNumberProvider = System;
-  type MaxQueuedSpends = MaxQueuedSpends;
-  type OrderExpirationPeriod = OrderExpirationPeriod;
+	type BlockNumberProvider = System;
+	type MaxQueuedSpends = MaxQueuedSpends;
+	type OrderExpirationPeriod = OrderExpirationPeriod;
 	#[cfg(feature = "runtime-benchmarks")]
 	type BenchmarkHelper = polkadot_runtime_common::impls::benchmarks::TreasuryArguments;
 }
@@ -2208,7 +2208,7 @@ pub mod migrations {
 		>,
 		// permanent
 		pallet_xcm::migration::MigrateToLatestXcmVersion<Runtime>,
-        pallet_treasury::migration::MigrateToOrderedPayouts<Runtime>,
+		pallet_treasury::migration::MigrateToOrderedPayouts<Runtime>,
 	);
 }
 

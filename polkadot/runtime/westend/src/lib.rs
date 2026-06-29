@@ -944,53 +944,6 @@ impl pallet_fast_unstake::Config for Runtime {
 
 parameter_types! {
 	pub const MaxAuthorities: u32 = 100_000;
-	pub const MaxKeys: u32 = 10_000;
-	pub const MaxPeerInHeartbeats: u32 = 10_000;
-	pub const MaxBalance: Balance = Balance::max_value();
-  pub const MaxQueuedSpends: u32 = 100;
-  pub const OrderExpirationPeriod: BlockNumber = 2 * DAYS;
-}
-
-impl pallet_treasury::Config for Runtime {
-	type PalletId = TreasuryPalletId;
-	type Currency = Balances;
-	type RejectOrigin = EitherOfDiverse<EnsureRoot<AccountId>, Treasurer>;
-	type RuntimeEvent = RuntimeEvent;
-	type SpendPeriod = SpendPeriod;
-	type Burn = ();
-	type BurnDestination = ();
-	type MaxApprovals = MaxApprovals;
-	type WeightInfo = weights::pallet_treasury::WeightInfo<Runtime>;
-	type SpendFunds = ();
-	type SpendOrigin = TreasurySpender;
-	type AssetKind = VersionedLocatableAsset;
-	type Beneficiary = VersionedLocation;
-	type BeneficiaryLookup = IdentityLookup<Self::Beneficiary>;
-	type Paymaster = PayOverXcm<
-		TreasuryInteriorLocation,
-		crate::xcm_config::XcmConfig,
-		crate::XcmPallet,
-		ConstU32<{ 6 * HOURS }>,
-		Self::Beneficiary,
-		Self::AssetKind,
-		LocatableAssetConverter,
-		VersionedLocationConverter,
-	>;
-	type BalanceConverter = UnityOrOuterConversion<
-		ContainsParts<
-			FromContains<
-				xcm_builder::IsChildSystemParachain<ParaId>,
-				xcm_builder::IsParentsOnly<ConstU8<1>>,
-			>,
-		>,
-		AssetRate,
-	>;
-	type PayoutPeriod = PayoutSpendPeriod;
-	type BlockNumberProvider = System;
-	type MaxQueuedSpends = MaxQueuedSpends;
-	type OrderExpirationPeriod = OrderExpirationPeriod;
-	#[cfg(feature = "runtime-benchmarks")]
-	type BenchmarkHelper = polkadot_runtime_common::impls::benchmarks::TreasuryArguments;
 }
 
 impl pallet_offences::Config for Runtime {
@@ -2208,7 +2161,6 @@ pub mod migrations {
 		>,
 		// permanent
 		pallet_xcm::migration::MigrateToLatestXcmVersion<Runtime>,
-		pallet_treasury::migration::MigrateToOrderedPayouts<Runtime>,
 	);
 }
 

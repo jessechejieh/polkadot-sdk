@@ -33,8 +33,6 @@ doc:
 crates:
 - name: pallet-treasury
   bump: major
-- name: westend-runtime
-  bump: minor
 - name: rococo-runtime
   bump: minor
 - name: asset-hub-westend-runtime

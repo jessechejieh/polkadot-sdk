@@ -134,9 +134,10 @@ mod cleanup_proposals {
 
 /// Migration to initialize the payout queue for existing spends (Solution 1.2).
 ///
-/// This migration identifies all pending/failed spends that have not yet expired,
-/// groups them by asset kind, sorts them by valid_from (FIFO order),
-/// and initializes the PayoutQueue and NextPayout for each asset kind.
+/// Collects every live spend (dropping only `Pending`/`Failed` spends whose payout window has
+/// already expired, and keeping in-flight `Attempted` ones), groups them by asset kind, sorts each
+/// group by order key `max(now, valid_from)` then by index, and initializes `NextPayout` and
+/// `PayoutQueue` for each asset kind.
 mod migrate_to_ordered_payouts {
 	use super::*;
 

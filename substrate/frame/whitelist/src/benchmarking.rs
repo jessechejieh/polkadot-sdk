@@ -98,7 +98,11 @@ mod benchmarks {
 	// We benchmark with the maximum possible size for a call.
 	// If the resulting weight is too big, maybe it worth having a weight which depends
 	// on the size of the call, with a new witness in parameter.
-	#[benchmark(pov_mode = MaxEncodedLen {
+	// Root mode is `Measured` since `T::BlockNumberProvider` may read storage without a MEL
+	// bound (e.g. `ParachainSystem::ValidationData`).
+	#[benchmark(pov_mode = Measured {
+		Whitelist: MaxEncodedLen,
+		Preimage: MaxEncodedLen,
 		// Use measured PoV size for the Preimages since we pass in a length witness.
 		Preimage::PreimageFor: Measured
 	})]

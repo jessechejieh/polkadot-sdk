@@ -233,6 +233,9 @@ pub mod pallet {
 				Error::<T>::InvalidCallWeightWitness
 			);
 
+			// Relayer isn't charged; the privileged direct path still pays.
+			let pays_fee = if relayer.is_some() { Pays::No } else { Pays::Yes };
+
 			let call_actual_weight = Self::clean_and_dispatch(call_hash, call);
 			if let Some(who) = relayer {
 				Self::deposit_event(Event::<T>::DeferredDispatchExecuted { call_hash, who });
@@ -241,7 +244,7 @@ pub mod pallet {
 			let actual_weight = call_actual_weight.map(|w| {
 				w.saturating_add(T::WeightInfo::dispatch_whitelisted_call(call_encoded_len))
 			});
-			Ok(actual_weight.into())
+			Ok(PostDispatchInfo { actual_weight, pays_fee })
 		}
 
 		#[pallet::call_index(3)]
@@ -269,6 +272,9 @@ pub mod pallet {
 				},
 			};
 
+			// Relayer isn't charged; the privileged direct path still pays.
+			let pays_fee = if relayer.is_some() { Pays::No } else { Pays::Yes };
+
 			let call_actual_weight = Self::clean_and_dispatch(call_hash, *call);
 			if let Some(who) = relayer {
 				Self::deposit_event(Event::<T>::DeferredDispatchExecuted { call_hash, who });
@@ -277,7 +283,7 @@ pub mod pallet {
 			let actual_weight = call_actual_weight.map(|w| {
 				w.saturating_add(T::WeightInfo::dispatch_whitelisted_call_with_preimage(call_len))
 			});
-			Ok(actual_weight.into())
+			Ok(PostDispatchInfo { actual_weight, pays_fee })
 		}
 
 		#[pallet::call_index(4)]

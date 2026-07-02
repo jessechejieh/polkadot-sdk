@@ -626,14 +626,61 @@ fn relay_cannot_be_replayed() {
 			call.clone(),
 		));
 		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
-		assert_ok!(Whitelist::dispatch_whitelisted_call_with_preimage(
+		let post = Whitelist::dispatch_whitelisted_call_with_preimage(
 			RuntimeOrigin::signed(1),
 			call.clone(),
-		));
+		)
+		.expect("relay succeeds");
+		// The relayer is not charged.
+		assert_eq!(post.pays_fee, Pays::No);
 
 		// A second relay of the same hash must fail: the authorized dispatch can't be replayed.
 		assert_noop!(
 			Whitelist::dispatch_whitelisted_call_with_preimage(RuntimeOrigin::signed(1), call),
+			crate::Error::<Test>::DeferredDispatchNotFound,
+		);
+	});
+}
+
+#[test]
+fn relay_cannot_be_replayed_without_preimage() {
+	new_test_ext().execute_with(|| {
+		let call =
+			Box::new(RuntimeCall::System(frame_system::Call::remark { remark: vec![6u8; 8] }));
+		let call_weight = call.get_dispatch_info().call_weight;
+		let encoded_call = call.encode();
+		let call_encoded_len = encoded_call.len() as u32;
+		let call_hash = <Test as frame_system::Config>::Hashing::hash(&encoded_call[..]);
+
+		// Defer via the privileged origin, note the preimage, then whitelist.
+		assert_ok!(Whitelist::dispatch_whitelisted_call(
+			RuntimeOrigin::root(),
+			call_hash,
+			call_encoded_len,
+			call_weight,
+		));
+		assert_ok!(Preimage::note(encoded_call.into()));
+		assert_ok!(Whitelist::whitelist_call(RuntimeOrigin::root(), call_hash));
+
+		// A signed relayer executes the deferred call once — succeeds and consumes the entry.
+		let post = Whitelist::dispatch_whitelisted_call(
+			RuntimeOrigin::signed(1),
+			call_hash,
+			call_encoded_len,
+			call_weight,
+		)
+		.expect("relay succeeds");
+		// The relayer is not charged.
+		assert_eq!(post.pays_fee, Pays::No);
+
+		// A second relay of the same hash must fail: the authorized dispatch can't be replayed.
+		assert_noop!(
+			Whitelist::dispatch_whitelisted_call(
+				RuntimeOrigin::signed(1),
+				call_hash,
+				call_encoded_len,
+				call_weight,
+			),
 			crate::Error::<Test>::DeferredDispatchNotFound,
 		);
 	});

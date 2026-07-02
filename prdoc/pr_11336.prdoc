@@ -8,7 +8,7 @@ doc:
       `dispatch_whitelisted_call_with_preimage` is invoked by a whitelisted origin but
       the call hash is not yet whitelisted, the dispatch is no longer rejected. Instead,
       it is deferred with an expiration block and can be executed later by any signed
-      origin once the call is whitelisted.
+      origin once the call is whitelisted. The relaying signed origin is not charged.
 
       Adds the permissionless `remove_deferred_dispatch` extrinsic for cleaning up
       expired deferred entries, with fees refunded on success. Introduces new config

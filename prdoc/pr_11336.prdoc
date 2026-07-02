@@ -28,3 +28,5 @@ crates:
     bump: minor
   - name: pallet-staking-async-rc-runtime
     bump: minor
+  - name: governance-westend-integration-tests
+    bump: none

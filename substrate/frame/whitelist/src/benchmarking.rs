@@ -58,16 +58,19 @@ mod benchmarks {
 		Ok(())
 	}
 
+	// Measured through `dispatch_whitelisted_call_with_preimage`, the worst case of the two
+	// defer sites: includes the origin check, the `WhitelistedCall` read and hashing the
+	// `n`-byte call.
 	#[benchmark]
-	fn defer_dispatch() -> Result<(), BenchmarkError> {
-		let call: <T as Config>::RuntimeCall =
-			frame_system::Call::remark { remark: alloc::vec![] }.into();
+	fn defer_dispatch(n: Linear<1, 10_000>) -> Result<(), BenchmarkError> {
+		let origin = T::DispatchWhitelistedOrigin::try_successful_origin()
+			.map_err(|_| BenchmarkError::Weightless)?;
+		let remark = alloc::vec![1u8; n as usize];
+		let call: <T as Config>::RuntimeCall = frame_system::Call::remark { remark }.into();
 		let call_hash = T::Hashing::hash_of(&call);
 
-		#[block]
-		{
-			Pallet::<T>::defer_dispatch(call_hash).expect("deferring dispatch must be successful");
-		}
+		#[extrinsic_call]
+		dispatch_whitelisted_call_with_preimage(origin as T::RuntimeOrigin, Box::new(call));
 
 		ensure!(DeferredDispatch::<T>::contains_key(call_hash), "dispatch not deferred");
 		Ok(())

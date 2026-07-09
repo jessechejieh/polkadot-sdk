@@ -52,7 +52,7 @@ use scale_info::TypeInfo;
 
 pub use pallet::*;
 
-/// Block number as seen by [`Config::BlockNumberProvider`].
+/// The Block number that we use to measure time.
 ///
 /// Deferral expirations are tracked against this provider rather than the local system block,
 /// so on a parachain it can be the relay chain block number. All `DeferredDispatch` `expire_at`
@@ -212,7 +212,7 @@ pub mod pallet {
 				Ok(_) if WhitelistedCall::<T>::contains_key(call_hash) => None,
 				Ok(_) => {
 					Self::defer_dispatch(call_hash)?;
-					return Ok(Some(T::WeightInfo::defer_dispatch()).into());
+					return Ok(Some(T::WeightInfo::defer_dispatch(0)).into());
 				},
 				Err(dispatch_origin) => {
 					Some(Self::ensure_signed_deferred_dispatch(dispatch_origin, call_hash)?)
@@ -265,7 +265,7 @@ pub mod pallet {
 				Ok(_) if WhitelistedCall::<T>::contains_key(call_hash) => None,
 				Ok(_) => {
 					Self::defer_dispatch(call_hash)?;
-					return Ok(Some(T::WeightInfo::defer_dispatch()).into());
+					return Ok(Some(T::WeightInfo::defer_dispatch(call_len)).into());
 				},
 				Err(dispatch_origin) => {
 					Some(Self::ensure_signed_deferred_dispatch(dispatch_origin, call_hash)?)

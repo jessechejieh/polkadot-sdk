@@ -65,7 +65,7 @@ impl<T: frame_system::Config> pallet_whitelist::WeightInfo for WeightInfo<T> {
 	}
 	/// Storage: `Whitelist::DeferredDispatch` (r:1 w:1)
 	/// Proof: `Whitelist::DeferredDispatch` (`max_values`: None, `max_size`: Some(44), added: 2519, mode: `MaxEncodedLen`)
-	fn defer_dispatch() -> Weight {
+	fn defer_dispatch(_n: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `109`
 		//  Estimated: `3509`

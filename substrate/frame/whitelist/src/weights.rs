@@ -72,7 +72,7 @@ use frame::weights_prelude::*;
 pub trait WeightInfo {
 	fn whitelist_call() -> Weight;
 	fn remove_whitelisted_call() -> Weight;
-	fn defer_dispatch() -> Weight;
+	fn defer_dispatch(n: u32, ) -> Weight;
 	fn remove_deferred_dispatch() -> Weight;
 	fn dispatch_whitelisted_call(n: u32, ) -> Weight;
 	fn dispatch_whitelisted_call_with_preimage(n: u32, ) -> Weight;
@@ -113,7 +113,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	}
 	/// Storage: `Whitelist::DeferredDispatch` (r:1 w:1)
 	/// Proof: `Whitelist::DeferredDispatch` (`max_values`: None, `max_size`: Some(44), added: 2519, mode: `MaxEncodedLen`)
-	fn defer_dispatch() -> Weight {
+	fn defer_dispatch(_n: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `241`
 		//  Estimated: `3509`
@@ -212,7 +212,7 @@ impl WeightInfo for () {
 	}
 	/// Storage: `Whitelist::DeferredDispatch` (r:1 w:1)
 	/// Proof: `Whitelist::DeferredDispatch` (`max_values`: None, `max_size`: Some(44), added: 2519, mode: `MaxEncodedLen`)
-	fn defer_dispatch() -> Weight {
+	fn defer_dispatch(_n: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `241`
 		//  Estimated: `3509`

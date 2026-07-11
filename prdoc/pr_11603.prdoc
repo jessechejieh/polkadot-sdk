@@ -29,7 +29,8 @@ doc:
     queue per asset kind; spends fail with the new `QueueFull` error once reached) and
     `OrderExpirationPeriod` (how long a spend may block the head of the order before it can be
     rotated). A `MigrateToOrderedPayouts` migration is provided to populate the payout order from
-    the existing `Spends` storage.
+    the existing `Spends` storage; it is a `VersionedMigration` bumping the pallet storage version
+    from 0 to 1.
 crates:
 - name: pallet-treasury
   bump: major
@@ -45,3 +46,11 @@ crates:
   bump: minor
 - name: pallet-staking-async-rc-runtime
   bump: minor
+- name: polkadot-runtime-common
+  bump: none
+- name: pallet-bounties
+  bump: none
+- name: pallet-child-bounties
+  bump: none
+- name: pallet-tips
+  bump: none

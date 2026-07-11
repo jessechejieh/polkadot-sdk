@@ -231,7 +231,11 @@ pub mod pallet {
 	};
 	use frame_system::pallet_prelude::{ensure_signed, OriginFor};
 
+	/// The in-code storage version.
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
 	#[pallet::pallet]
+	#[pallet::storage_version(STORAGE_VERSION)]
 	pub struct Pallet<T, I = ()>(PhantomData<(T, I)>);
 
 	#[pallet::config]

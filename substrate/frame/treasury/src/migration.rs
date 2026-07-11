@@ -20,7 +20,10 @@
 use super::*;
 use alloc::{collections::BTreeSet, vec::Vec};
 use core::marker::PhantomData;
-use frame_support::{defensive, traits::OnRuntimeUpgrade};
+use frame_support::{
+	defensive,
+	traits::{OnRuntimeUpgrade, UncheckedOnRuntimeUpgrade},
+};
 
 /// The log target for this pallet.
 const LOG_TARGET: &str = "runtime::treasury";
@@ -142,9 +145,14 @@ mod migrate_to_ordered_payouts {
 	use super::*;
 
 	/// Migration to initialize the payout queue for existing spends.
-	pub struct MigrateToOrderedPayouts<T, I = ()>(PhantomData<(T, I)>);
+	///
+	/// Wrapped in [`MigrateToOrderedPayouts`](super::MigrateToOrderedPayouts) for the storage
+	/// version check.
+	pub struct UncheckedMigrateToOrderedPayouts<T, I = ()>(PhantomData<(T, I)>);
 
-	impl<T: Config<I>, I: 'static> OnRuntimeUpgrade for MigrateToOrderedPayouts<T, I> {
+	impl<T: Config<I>, I: 'static> UncheckedOnRuntimeUpgrade
+		for UncheckedMigrateToOrderedPayouts<T, I>
+	{
 		fn on_runtime_upgrade() -> Weight {
 			log::info!(
 				target: LOG_TARGET,
@@ -384,7 +392,7 @@ mod migrate_to_ordered_payouts {
 			pallet::Spends,
 			tests::{ExtBuilder, System, Test},
 		};
-		use frame_support::traits::OnRuntimeUpgrade;
+		use frame_support::traits::{OnRuntimeUpgrade, StorageVersion, UncheckedOnRuntimeUpgrade};
 
 		#[cfg(feature = "try-runtime")]
 		use frame_support::assert_ok;
@@ -418,12 +426,33 @@ mod migrate_to_ordered_payouts {
 		}
 
 		#[test]
+		fn migration_runs_once() {
+			ExtBuilder::default().build().execute_with(|| {
+				System::set_block_number(100);
+				insert_spend(0, 1, 100, 1000, 50, 200, PaymentState::Pending);
+
+				StorageVersion::new(0).put::<crate::Pallet<Test>>();
+				crate::migration::MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+
+				assert_eq!(StorageVersion::get::<crate::Pallet<Test>>(), 1);
+				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
+
+				// Re-run is a no-op: the version gate skips the migration.
+				NextPayout::<Test>::remove(1u32);
+				crate::migration::MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+
+				assert_eq!(StorageVersion::get::<crate::Pallet<Test>>(), 1);
+				assert!(NextPayout::<Test>::get(1u32).is_none());
+			});
+		}
+
+		#[test]
 		fn migration_empty_state() {
 			ExtBuilder::default().build().execute_with(|| {
 				System::set_block_number(100);
 				assert_eq!(Spends::<Test>::iter().count(), 0);
 
-				let weight = MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+				let weight = UncheckedMigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				assert!(weight.ref_time() == 0);
 				assert!(NextPayout::<Test>::iter().next().is_none());
@@ -440,7 +469,7 @@ mod migrate_to_ordered_payouts {
 				// failure can be retried rather than lost.
 				insert_spend(0, 1, 100, 1000, 50, 200, PaymentState::Attempted { id: 123u64 });
 
-				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+				UncheckedMigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				// Only spend → becomes NextPayout (order key = max(now=100, valid_from=50) = 100).
 				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
@@ -456,7 +485,7 @@ mod migrate_to_ordered_payouts {
 				// expire_at (99) < now (100)
 				insert_spend(0, 1, 100, 1000, 50, 99, PaymentState::Pending);
 
-				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+				UncheckedMigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				assert!(NextPayout::<Test>::get(1u32).is_none());
 			});
@@ -473,7 +502,7 @@ mod migrate_to_ordered_payouts {
 				// Asset 2: 1 spend
 				insert_spend(2, 2, 300, 1002, 40, 200, PaymentState::Failed);
 
-				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+				UncheckedMigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				// Asset 1: First spend is NextPayout
 				let (next_idx, _order_key, expire_at) = NextPayout::<Test>::get(1u32).unwrap();
@@ -501,7 +530,7 @@ mod migrate_to_ordered_payouts {
 				insert_spend(1, 1, 100, 1001, 50, 200, PaymentState::Pending); // earliest
 				insert_spend(2, 1, 100, 1002, 75, 200, PaymentState::Pending); // middle
 
-				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+				UncheckedMigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				// Sorted: 1 (50), 2 (75), 0 (100)
 				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
@@ -521,7 +550,7 @@ mod migrate_to_ordered_payouts {
 				insert_spend(3, 1, 100, 1001, 50, 200, PaymentState::Pending);
 				insert_spend(4, 1, 100, 1002, 50, 200, PaymentState::Pending);
 
-				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+				UncheckedMigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				// Sorted by index: 3, 4, 5
 				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(3));
@@ -547,7 +576,7 @@ mod migrate_to_ordered_payouts {
 					);
 				}
 
-				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+				UncheckedMigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				// NextPayout is index 0
 				assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(0));
@@ -570,7 +599,7 @@ mod migrate_to_ordered_payouts {
 				insert_spend(2, 1, 100, 1002, 52, 200, PaymentState::Attempted { id: 1 });
 				insert_spend(3, 1, 100, 1003, 53, 99, PaymentState::Pending); // expired
 
-				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+				UncheckedMigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
 				// Pending (0), Failed (1) and the in-flight Attempted (2) are ordered; the expired
 				// Pending (3) is dropped. All are mature at `now = 100`, so order keys clamp to 100
@@ -588,7 +617,7 @@ mod migrate_to_ordered_payouts {
 				insert_spend(1, 1, 100, 1001, 51, 200, PaymentState::Failed);
 				insert_spend(2, 1, 100, 1002, 52, 200, PaymentState::Attempted { id: 1 });
 
-				let state = MigrateToOrderedPayouts::<Test>::pre_upgrade().unwrap();
+				let state = UncheckedMigrateToOrderedPayouts::<Test>::pre_upgrade().unwrap();
 				let decoded: Vec<(u32, u32)> = Vec::decode(&mut &state[..]).unwrap();
 
 				// All three are ordered by the migration, including the in-flight Attempted spend.
@@ -613,9 +642,9 @@ mod migrate_to_ordered_payouts {
 				System::set_block_number(100);
 				insert_spend(0, 1, 100, 1000, 50, 200, PaymentState::Pending);
 				insert_spend(1, 1, 100, 1001, 51, 200, PaymentState::Pending);
-				MigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
+				UncheckedMigrateToOrderedPayouts::<Test>::on_runtime_upgrade();
 
-				assert_ok!(MigrateToOrderedPayouts::<Test>::post_upgrade(pre_state));
+				assert_ok!(UncheckedMigrateToOrderedPayouts::<Test>::post_upgrade(pre_state));
 			});
 		}
 
@@ -635,11 +664,20 @@ mod migrate_to_ordered_payouts {
 
 				let pre_state = vec![(1u32, 0u32)].encode();
 
-				assert!(MigrateToOrderedPayouts::<Test>::post_upgrade(pre_state).is_err());
+				assert!(UncheckedMigrateToOrderedPayouts::<Test>::post_upgrade(pre_state).is_err());
 			});
 		}
 	}
 }
 
 pub use cleanup_proposals::Migration as CleanupProposalsMigration;
-pub use migrate_to_ordered_payouts::MigrateToOrderedPayouts;
+
+/// Initialize the payout queue for existing spends, gated on storage version 0 and bumping it
+/// to 1.
+pub type MigrateToOrderedPayouts<T, I = ()> = frame_support::migrations::VersionedMigration<
+	0,
+	1,
+	migrate_to_ordered_payouts::UncheckedMigrateToOrderedPayouts<T, I>,
+	Pallet<T, I>,
+	<T as frame_system::Config>::DbWeight,
+>;

@@ -864,6 +864,11 @@ type Migrations = (
 		pallet_session::migrations::v1::InitOffenceSeverity<Runtime>,
 	>,
 	cumulus_pallet_parachain_system::migration::Migration<Runtime>,
+	// unreleased
+	pallet_treasury::migration::MigrateToOrderedPayouts<
+		Runtime,
+		fellowship::FellowshipTreasuryInstance,
+	>,
 );
 
 /// Executive: handles dispatch to the various modules.

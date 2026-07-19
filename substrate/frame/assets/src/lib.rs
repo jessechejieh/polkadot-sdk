@@ -499,6 +499,18 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type NextAssetId<T: Config<I>, I: 'static = ()> = StorageValue<_, T::AssetId, OptionQuery>;
 
+	/// Asset category memberships. A double map of category name to member asset IDs.
+	#[pallet::storage]
+	pub type AssetCategories<T: Config<I>, I: 'static = ()> = StorageDoubleMap<
+		_,
+		Blake2_128Concat,
+		BoundedVec<u8, T::StringLimit>,
+		Blake2_128Concat,
+		T::AssetId,
+		(),
+		OptionQuery,
+	>;
+
 	#[pallet::genesis_config]
 	#[derive(frame_support::DefaultNoBound)]
 	pub struct GenesisConfig<T: Config<I>, I: 'static = ()> {

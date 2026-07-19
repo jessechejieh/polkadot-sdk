@@ -57,7 +57,7 @@ use frame_support::{
 			imbalance::{ResolveAssetTo, ResolveTo},
 			nonfungibles_v2::Inspect,
 			pay::PayAssetFromAccount,
-			GetSalary, PayFromAccount, PayWithFungibles,
+			AssetCategoryManager, GetSalary, PayFromAccount, PayWithFungibles,
 		},
 		AsEnsureOriginWithArg, ConstBool, ConstU128, ConstU16, ConstU32, ConstU64,
 		ConstantStoragePrice, Contains, Currency, EitherOfDiverse, EnsureOriginWithArg,
@@ -1330,6 +1330,31 @@ parameter_types! {
 	pub const SpendPayoutPeriod: BlockNumber = 30 * DAYS;
 }
 
+/// Categories from `pallet-assets`, with balances of the native asset from `pallet-balances`
+/// and of any other asset from `pallet-assets`.
+pub struct CombinedAssetManager;
+impl AssetCategoryManager<AccountId> for CombinedAssetManager {
+	type AssetKind = NativeOrWithId<u32>;
+	type Balance = Balance;
+	type NameLimit = StringLimit;
+	type MaxAssets = ConstU32<8>;
+
+	fn assets_in_category(category: &[u8]) -> BoundedVec<NativeOrWithId<u32>, Self::MaxAssets> {
+		let assets = Assets::assets_in_category(category, Self::MaxAssets::get())
+			.into_iter()
+			.map(NativeOrWithId::WithId)
+			.collect::<Vec<_>>();
+		BoundedVec::truncate_from(assets)
+	}
+
+	fn available_balance(asset: NativeOrWithId<u32>, owner: &AccountId) -> Option<Balance> {
+		match asset {
+			NativeOrWithId::Native => Some(Balances::free_balance(owner)),
+			NativeOrWithId::WithId(id) => Assets::maybe_balance(id, owner),
+		}
+	}
+}
+
 impl pallet_treasury::Config for Runtime {
 	type PalletId = TreasuryPalletId;
 	type Currency = Balances;
@@ -1351,6 +1376,7 @@ impl pallet_treasury::Config for Runtime {
 	type Paymaster = PayAssetFromAccount<NativeAndAssets, TreasuryAccount>;
 	type BalanceConverter = AssetRate;
 	type PayoutPeriod = SpendPayoutPeriod;
+	type AssetCategories = CombinedAssetManager;
 	type BlockNumberProvider = System;
 	#[cfg(feature = "runtime-benchmarks")]
 	type BenchmarkHelper = PalletTreasuryArguments;

@@ -37,10 +37,11 @@ use frame_support::{
 	genesis_builder_helper::{build_state, get_preset},
 	parameter_types,
 	traits::{
-		fungible::HoldConsideration, tokens::UnityOrOuterConversion, ConstBool, ConstU32, Contains,
-		EitherOf, EitherOfDiverse, EnsureOriginWithArg, EverythingBut, FromContains,
-		InstanceFilter, KeyOwnerProofSystem, LinearStoragePrice, Nothing, ProcessMessage,
-		ProcessMessageError, VariantCountOf, WithdrawReasons,
+		fungible::HoldConsideration,
+		tokens::{NoAssetCategories, UnityOrOuterConversion},
+		ConstBool, ConstU32, Contains, EitherOf, EitherOfDiverse, EnsureOriginWithArg,
+		EverythingBut, FromContains, InstanceFilter, KeyOwnerProofSystem, LinearStoragePrice,
+		Nothing, ProcessMessage, ProcessMessageError, VariantCountOf, WithdrawReasons,
 	},
 	weights::{ConstantMultiplier, WeightMeter, WeightToFee as _},
 	PalletId,
@@ -1052,6 +1053,7 @@ impl pallet_treasury::Config for Runtime {
 		AssetRate,
 	>;
 	type PayoutPeriod = PayoutSpendPeriod;
+	type AssetCategories = NoAssetCategories<VersionedLocatableAsset, Balance>;
 	type BlockNumberProvider = System;
 	#[cfg(feature = "runtime-benchmarks")]
 	type BenchmarkHelper = polkadot_runtime_common::impls::benchmarks::TreasuryArguments;

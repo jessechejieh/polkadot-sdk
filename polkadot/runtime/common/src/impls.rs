@@ -301,7 +301,7 @@ mod tests {
 		dispatch::DispatchClass,
 		parameter_types,
 		traits::{
-			tokens::{PayFromAccount, UnityAssetBalanceConversion},
+			tokens::{NoAssetCategories, PayFromAccount, UnityAssetBalanceConversion},
 			FindAuthor,
 		},
 		weights::Weight,
@@ -398,6 +398,7 @@ mod tests {
 		type BeneficiaryLookup = IdentityLookup<Self::AccountId>;
 		type Paymaster = PayFromAccount<Balances, TreasuryAccount>;
 		type BalanceConverter = UnityAssetBalanceConversion;
+		type AssetCategories = NoAssetCategories<(), u64>;
 		type PayoutPeriod = ConstU64<0>;
 		type BlockNumberProvider = System;
 		#[cfg(feature = "runtime-benchmarks")]

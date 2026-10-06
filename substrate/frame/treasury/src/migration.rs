@@ -267,7 +267,7 @@ mod migrate_to_ordered_payouts {
 					}
 				}
 
-				PayoutQueue::<T, I>::insert(&asset_kind, queue);
+				Pallet::<T, I>::put_queue(&asset_kind, queue);
 			}
 
 			log::info!(

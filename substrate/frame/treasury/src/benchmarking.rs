@@ -259,6 +259,28 @@ mod benchmarks {
 			false
 		};
 
+		if spend_exists {
+			// Worst case: the head's order lease has lapsed, so `payout` additionally reads
+			// `PayoutQueue` to check whether another spend is already mature. The queue is
+			// full of not-yet-mature spends, so the check decodes a full queue and the payout
+			// still proceeds.
+			NextPayout::<T, I>::mutate(&asset_kind, |entry| {
+				if let Some((_, _, expire_at)) = entry {
+					*expire_at = BlockNumberFor::<T, I>::zero();
+				}
+			});
+			let future = BlockNumberFor::<T, I>::one() + T::PayoutPeriod::get();
+			let queue: BoundedVec<_, T::MaxQueuedSpends> = (0..T::MaxQueuedSpends::get())
+				.map(|i| (i + 1_000_000, future))
+				.collect::<alloc::vec::Vec<_>>()
+				.try_into()
+				.expect("max is the bound; qed");
+			PayoutQueue::<T, I>::insert(&asset_kind, queue);
+			// Relay-block providers (e.g. asset-hub) report 0 at genesis; advance so the zeroed
+			// order expiration is in the past.
+			T::BlockNumberProvider::set_block_number(One::one());
+		}
+
 		T::Paymaster::ensure_successful(&beneficiary, asset_kind, amount);
 		let caller: T::AccountId = account("caller", 0, SEED);
 

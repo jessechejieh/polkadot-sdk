@@ -112,7 +112,7 @@ use sp_runtime::{
 		AccountIdConversion, BlockNumberProvider, CheckedAdd, One, Saturating, StaticLookup,
 		UniqueSaturatedInto, Zero,
 	},
-	Debug, PerThing, Permill,
+	Debug, DispatchError, PerThing, Permill,
 };
 
 use frame_support::{
@@ -312,12 +312,28 @@ pub mod pallet {
 		type PayoutPeriod: Get<BlockNumberFor<Self, I>>;
 
 		/// Maximum number of spends in the payout queue per asset kind.
+		///
+		/// NOTE: must not be lowered below the length of a live [`PayoutQueue`] without a
+		/// migration; a queue longer than the bound can neither rotate (the re-inserted head
+		/// would overflow it) nor accept new spends.
 		#[pallet::constant]
 		type MaxQueuedSpends: Get<u32>;
 
 		/// Period after which a spend's order expires and can be moved to the end of the queue.
+		///
+		/// Sizing: a spend can only be paid as [`NextPayout`], and each unpaid head holds that
+		/// slot for `OrderExpirationPeriod + 1` blocks before it can be rotated. A spend with
+		/// `PayoutPeriod / (OrderExpirationPeriod + 1)` or more unpaid spends ahead of it
+		/// therefore expires before its turn and is removed unpaid, even if the pot could have
+		/// paid it. Must be smaller than [`Config::PayoutPeriod`]; asserted by `integrity_test`.
 		#[pallet::constant]
 		type OrderExpirationPeriod: Get<BlockNumberFor<Self, I>>;
+
+		/// The maximum delay into the future that a spend's `valid_from` may be set to, relative
+		/// to the approval block, so a far-future spend cannot hold a payout queue slot that
+		/// nothing permissionless can free.
+		#[pallet::constant]
+		type MaxSpendDelay: Get<BlockNumberFor<Self, I>>;
 
 		/// Helper type for benchmarks.
 		#[cfg(feature = "runtime-benchmarks")]
@@ -401,7 +417,7 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type NextPayout<T: Config<I>, I: 'static = ()> = StorageMap<
 		_,
-		Twox64Concat,
+		Blake2_128Concat,
 		T::AssetKind,
 		(SpendIndex, BlockNumberFor<T, I>, BlockNumberFor<T, I>),
 		OptionQuery,
@@ -415,7 +431,7 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type PayoutQueue<T: Config<I>, I: 'static = ()> = StorageMap<
 		_,
-		Twox64Concat,
+		Blake2_128Concat,
 		T::AssetKind,
 		BoundedVec<(SpendIndex, BlockNumberFor<T, I>), T::MaxQueuedSpends>,
 		ValueQuery,
@@ -513,6 +529,8 @@ pub mod pallet {
 		NotNextPayout,
 		/// Payout queue is full for this asset kind.
 		QueueFull,
+		/// The spend's `valid_from` is too far in the future.
+		SpendTooFarInFuture,
 	}
 
 	#[pallet::hooks]
@@ -713,7 +731,7 @@ pub mod pallet {
 		/// - `valid_from`: The block number from which the spend can be claimed. It can refer to
 		///   the past if the resulting spend has not yet expired according to the
 		///   [`Config::PayoutPeriod`]. If `None`, the spend can be claimed immediately after
-		///   approval.
+		///   approval. May be at most [`Config::MaxSpendDelay`] blocks in the future.
 		///
 		/// ## Events
 		///
@@ -734,6 +752,10 @@ pub mod pallet {
 			let valid_from = valid_from.unwrap_or(now);
 			let expire_at = valid_from.saturating_add(T::PayoutPeriod::get());
 			ensure!(expire_at > now, Error::<T, I>::SpendExpired);
+			ensure!(
+				valid_from <= now.saturating_add(T::MaxSpendDelay::get()),
+				Error::<T, I>::SpendTooFarInFuture
+			);
 
 			let native_amount =
 				T::BalanceConverter::from_asset_balance(amount, *asset_kind.clone())
@@ -800,8 +822,11 @@ pub mod pallet {
 		/// In case of a payout failure, the spend status must be updated with the `check_status`
 		/// dispatchable before retrying with the current function.
 		///
-		/// Only the spend designated as `NextPayout` for its asset kind can be claimed. This
-		/// ensures FIFO ordering of spends per asset kind.
+		/// Only the spend designated as `NextPayout` for its asset kind can be claimed. The head
+		/// is always the earliest-maturing spend of its asset kind; spends of equal maturity are
+		/// paid in approval order. Read [`NextPayout`] for the asset kind first: calling `payout`
+		/// with any other index fails with `NotNextPayout` but still charges the full `payout`
+		/// weight.
 		///
 		/// ### Parameters
 		/// - `index`: The spend index.
@@ -823,6 +848,15 @@ pub mod pallet {
 			ensure!(next_payout.0 == index, Error::<T, I>::NotNextPayout);
 
 			let now = T::BlockNumberProvider::current_block_number();
+			// Once the head's order has expired and another spend is mature, the head must be
+			// rotated by `check_status` first, so a head that keeps failing cannot hold the slot
+			// (and renew its `expire_at`) past its order. A lone head may still be retried.
+			if next_payout.2 < now {
+				let other_mature = PayoutQueue::<T, I>::get(&asset_kind)
+					.first()
+					.is_some_and(|(_, order_key)| *order_key <= now);
+				ensure!(!other_mature, Error::<T, I>::NotNextPayout);
+			}
 			ensure!(now >= spend.valid_from, Error::<T, I>::EarlyPayout);
 			ensure!(spend.expire_at > now, Error::<T, I>::SpendExpired);
 			ensure!(
@@ -858,7 +892,9 @@ pub mod pallet {
 		///
 		/// This function also manages the payout order:
 		/// - If the `NextPayout` order has expired and the spend is still Pending/Failed, it is
-		///   rotated to the back of the queue.
+		///   rotated to the back of the queue. The same applies to a head whose payment is still in
+		///   progress, so a payment that never concludes cannot block the queue. A rotation that
+		///   has nothing mature to promote does nothing and does not renew the head's order.
 		/// - If a spend has been successfully paid out or has fully expired, it is removed from the
 		///   queue and the next entry is promoted.
 		///
@@ -890,20 +926,23 @@ pub mod pallet {
 				return Ok(Pays::No.into());
 			}
 
-			// Check if this spend is the NextPayout and if its order has expired
-			if let Some((next_index, _, expire_at)) = NextPayout::<T, I>::get(&asset_kind) {
-				if next_index == index && expire_at < now {
-					// Order has expired - rotate the queue if spend is still Pending/Failed
-					if matches!(spend.status, State::Pending | State::Failed) {
-						Self::rotate_payout_queue(&asset_kind)?;
-						Self::deposit_event(Event::<T, I>::PayoutQueueRotated {
-							asset_kind: asset_kind.clone(),
-							index,
-						});
-						// Return early - the spend was rotated, not processed
-						return Ok(Pays::No.into());
-					}
-				}
+			// Whether this spend's order as head has expired.
+			let order_expired_head = NextPayout::<T, I>::get(&asset_kind)
+				.is_some_and(|(next_index, _, expire_at)| next_index == index && expire_at < now);
+
+			// Rotate an expired Pending/Failed head only when a rotation actually happened:
+			// with nothing mature to promote, the head keeps its (expired) lease so the first
+			// spend to mature can be rotated in straight away.
+			if order_expired_head &&
+				matches!(spend.status, State::Pending | State::Failed) &&
+				Self::rotate_payout_queue(&asset_kind)?
+			{
+				Self::deposit_event(Event::<T, I>::PayoutQueueRotated {
+					asset_kind: asset_kind.clone(),
+					index,
+				});
+				// Return early - the spend was rotated, not processed
+				return Ok(Pays::No.into());
 			}
 
 			let payment_id = match spend.status {
@@ -924,7 +963,20 @@ pub mod pallet {
 					Self::deposit_event(Event::<T, I>::SpendProcessed { index });
 					return Ok(Pays::No.into());
 				},
-				Status::InProgress => return Err(Error::<T, I>::Inconclusive.into()),
+				Status::InProgress => {
+					// Rotate an expired-lease head even while its payment is in flight, so a
+					// payment that never concludes (e.g. a lost `PayOverXcm` response) cannot
+					// block every other spend of this asset kind. The spend stays `Attempted`,
+					// so it cannot be paid twice.
+					if order_expired_head && Self::rotate_payout_queue(&asset_kind)? {
+						Self::deposit_event(Event::<T, I>::PayoutQueueRotated {
+							asset_kind: asset_kind.clone(),
+							index,
+						});
+						return Ok(Pays::No.into());
+					}
+					return Err(Error::<T, I>::Inconclusive.into());
+				},
 			}
 			return Ok(Pays::Yes.into());
 		}
@@ -1085,6 +1137,19 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 		Ok(())
 	}
 
+	/// Store the payout queue for the given asset kind, removing the key entirely when the
+	/// queue is empty so no permanent empty entries accumulate per asset kind.
+	fn put_queue(
+		asset_kind: &T::AssetKind,
+		queue: BoundedVec<(SpendIndex, BlockNumberFor<T, I>), T::MaxQueuedSpends>,
+	) {
+		if queue.is_empty() {
+			PayoutQueue::<T, I>::remove(asset_kind);
+		} else {
+			PayoutQueue::<T, I>::insert(asset_kind, queue);
+		}
+	}
+
 	/// Remove a spend from the payout queue for the given asset kind and update NextPayout.
 	/// Called when a spend is successfully paid out, expired, or voided.
 	fn remove_from_queue(asset_kind: &T::AssetKind, index: SpendIndex) {
@@ -1108,7 +1173,7 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 
 					// Remove it from queue
 					queue.remove(0);
-					PayoutQueue::<T, I>::insert(asset_kind, queue);
+					Self::put_queue(asset_kind, queue);
 				} else {
 					// Queue is empty, clear NextPayout
 					NextPayout::<T, I>::remove(asset_kind);
@@ -1118,7 +1183,7 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 				let mut queue = PayoutQueue::<T, I>::get(asset_kind);
 				if let Some(pos) = queue.iter().position(|(idx, _)| *idx == index) {
 					queue.remove(pos);
-					PayoutQueue::<T, I>::insert(asset_kind, queue);
+					Self::put_queue(asset_kind, queue);
 				}
 			}
 		}
@@ -1127,7 +1192,11 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 	/// Rotate the payout queue for the given asset kind when the current order expires.
 	/// Re-inserts the current NextPayout into the queue with an order key of `now`, keeping the
 	/// queue sorted by order key, and promotes the next entry.
-	fn rotate_payout_queue(asset_kind: &T::AssetKind) -> DispatchResult {
+	///
+	/// Returns `Ok(false)` without writing anything when the queue front is not yet mature: a
+	/// rotation that would promote the same head again must not renew its lease, so the first
+	/// spend to mature can be rotated in straight away.
+	fn rotate_payout_queue(asset_kind: &T::AssetKind) -> Result<bool, DispatchError> {
 		let (current_index, _, _) =
 			NextPayout::<T, I>::get(asset_kind).ok_or(Error::<T, I>::NotNextPayout)?;
 		let now = T::BlockNumberProvider::current_block_number();
@@ -1136,6 +1205,12 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 		// front, so the queue length never changes.
 		let mut queue = PayoutQueue::<T, I>::get(asset_kind).into_inner();
 
+		// Nothing to promote: the queue is empty or its front is not yet mature. Leave the
+		// head's lease expired instead of renewing it for a no-op rotation.
+		if !queue.first().is_some_and(|(_, order_key)| *order_key <= now) {
+			return Ok(false);
+		}
+
 		// Re-insert the expired spend with `now` as its order key, keeping the queue sorted.
 		// Using `now` (rather than the spend's `valid_from`) sends the rotated spend behind
 		// every entry that is already mature, while preserving the sort order.
@@ -1143,8 +1218,9 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 			queue.iter().position(|(_, order_key)| *order_key > now).unwrap_or(queue.len());
 		queue.insert(insert_pos, (current_index, now));
 
-		// Promote the front to NextPayout and remove it. The queue is guaranteed non-empty here
-		// because we just inserted into it, so there is always something to promote.
+		// Promote the front to NextPayout and remove it. The front was checked mature above, so
+		// it cannot be the entry just inserted (whose order key is `now` and sorts last among
+		// mature entries).
 		let (new_next, order_key) = queue.remove(0);
 		let new_expire_at = now.max(order_key).saturating_add(T::OrderExpirationPeriod::get());
 		NextPayout::<T, I>::insert(asset_kind, (new_next, order_key, new_expire_at));
@@ -1152,8 +1228,8 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 		// Net length is unchanged (one inserted, one removed), so it still fits the bound.
 		let queue = BoundedVec::<_, T::MaxQueuedSpends>::try_from(queue)
 			.map_err(|_| Error::<T, I>::QueueFull)?;
-		PayoutQueue::<T, I>::insert(asset_kind, queue);
-		Ok(())
+		Self::put_queue(asset_kind, queue);
+		Ok(true)
 	}
 
 	/// Spend some money! returns number of approvals before spend.
@@ -1263,6 +1339,15 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 		Self::try_state_payout_queue()?;
 
 		Ok(())
+	}
+
+	/// Ensure the correctness of the pallet's configuration.
+	#[cfg(test)]
+	fn integrity_test() {
+		assert!(
+			T::OrderExpirationPeriod::get() < T::PayoutPeriod::get(),
+			"`OrderExpirationPeriod` must be smaller than `PayoutPeriod`",
+		);
 	}
 
 	/// ### Invariants of proposal storage items

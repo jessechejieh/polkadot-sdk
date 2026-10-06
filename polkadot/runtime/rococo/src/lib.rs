@@ -525,6 +525,7 @@ parameter_types! {
 	pub const MaxBalance: Balance = Balance::max_value();
 	pub const MaxQueuedSpends: u32 = 100;
 	pub const OrderExpirationPeriod: BlockNumber = 2 * DAYS;
+	pub const MaxSpendDelay: BlockNumber = 30 * DAYS;
 }
 
 impl pallet_treasury::Config for Runtime {
@@ -565,6 +566,7 @@ impl pallet_treasury::Config for Runtime {
 	type BlockNumberProvider = System;
 	type MaxQueuedSpends = MaxQueuedSpends;
 	type OrderExpirationPeriod = OrderExpirationPeriod;
+	type MaxSpendDelay = MaxSpendDelay;
 	#[cfg(feature = "runtime-benchmarks")]
 	type BenchmarkHelper = polkadot_runtime_common::impls::benchmarks::TreasuryArguments;
 }

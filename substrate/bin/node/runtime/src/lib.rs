@@ -1320,6 +1320,7 @@ parameter_types! {
 	pub const SpendPayoutPeriod: BlockNumber = 30 * DAYS;
 	pub const MaxQueuedSpends: u32 = 100;
 	pub const OrderExpirationPeriod: BlockNumber = 10 * HOURS;
+	pub const MaxSpendDelay: BlockNumber = 30 * DAYS;
 }
 
 impl pallet_treasury::Config for Runtime {
@@ -1346,6 +1347,7 @@ impl pallet_treasury::Config for Runtime {
 	type BlockNumberProvider = System;
 	type MaxQueuedSpends = MaxQueuedSpends;
 	type OrderExpirationPeriod = OrderExpirationPeriod;
+	type MaxSpendDelay = MaxSpendDelay;
 	#[cfg(feature = "runtime-benchmarks")]
 	type BenchmarkHelper = PalletTreasuryArguments;
 }

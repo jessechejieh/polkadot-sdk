@@ -141,6 +141,7 @@ parameter_types! {
 	pub const SpendPayoutPeriod: u64 = 5;
 	pub const MaxQueuedSpends: u32 = 100;
 	pub const OrderExpirationPeriod: u64 = 2;
+	pub const MaxSpendDelay: u64 = 10_000;
 }
 
 pub struct TestSpendOrigin;
@@ -199,6 +200,7 @@ impl Config for Test {
 	type PayoutPeriod = SpendPayoutPeriod;
 	type MaxQueuedSpends = MaxQueuedSpends;
 	type OrderExpirationPeriod = OrderExpirationPeriod;
+	type MaxSpendDelay = MaxSpendDelay;
 	type BlockNumberProvider = System;
 	#[cfg(feature = "runtime-benchmarks")]
 	type BenchmarkHelper = ();
@@ -1707,5 +1709,195 @@ fn head_preemption_preserves_fifo_among_equal_order_keys() {
 
 		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(2));
 		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 20), (1, 20)]);
+	});
+}
+
+#[test]
+fn integrity_test_works() {
+	Treasury::integrity_test();
+}
+
+/// A head whose payment never concludes (e.g. a lost `PayOverXcm` response) must not block
+/// every other spend of its asset kind: once its order lease expires, `check_status` rotates
+/// it to the back even though it is still `Attempted`.
+#[test]
+fn attempted_in_progress_head_is_rotated_after_order_expiry() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+		// Spend 0 (head) and spend 1 (queued) for asset 1.
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(100), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(200), None));
+		assert_eq!(NextPayout::<Test>::get(1u32), Some((0, 1, 3)));
+
+		// The head is paid, and the payment never concludes.
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
+		let id = get_payment_id(0).unwrap();
+		set_status(id, PaymentStatus::InProgress);
+
+		// Past the head's order lease, `check_status` rotates the stuck head to the back and
+		// promotes the queued spend instead of returning `Inconclusive`.
+		System::set_block_number(4);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0));
+		assert_eq!(NextPayout::<Test>::get(1u32), Some((1, 1, 6)));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 4)]);
+
+		// The promoted spend can be paid; the stuck one stays `Attempted` behind the head gate
+		// and cannot be paid twice.
+		assert_noop!(
+			Treasury::payout(RuntimeOrigin::signed(1), 0),
+			Error::<Test, _>::NotNextPayout
+		);
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 1));
+
+		// The rotated head can still conclude and be cleaned up.
+		set_status(id, PaymentStatus::Success);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0));
+		assert!(Spends::<Test>::get(0).is_none());
+		assert_ok!(Treasury::do_try_state());
+	});
+}
+
+/// A head whose lease has lapsed while another queued spend is already mature must be rotated
+/// by `check_status` first; `payout` refuses to re-attempt it (which would renew its lease).
+/// A lone head may still be retried.
+#[test]
+fn payout_refuses_head_after_order_lease_expired() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(6), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(7), None));
+		assert_eq!(NextPayout::<Test>::get(1u32), Some((0, 1, 3)));
+
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
+		set_status(get_payment_id(0).unwrap(), PaymentStatus::Failure);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0)); // -> Failed
+
+		// Lease lapsed (3 < 4) but the spend window is still open (expire_at = 1 + 5 = 6).
+		System::set_block_number(4);
+		assert_noop!(
+			Treasury::payout(RuntimeOrigin::signed(1), 0),
+			Error::<Test, _>::NotNextPayout
+		);
+
+		// Rotation promotes the other mature spend, which can then be paid.
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(2), 0));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(2), 1));
+		assert_ok!(Treasury::do_try_state());
+	});
+}
+
+/// A lone head (nothing mature behind it) keeps its expired lease: a no-op rotation must not
+/// renew it, so the first spend to mature is rotated in straight away.
+#[test]
+fn payout_refuses_head_after_order_lease_expired_lone_head_may_retry() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 2, Box::new(6), None));
+		assert_eq!(NextPayout::<Test>::get(1u32), Some((0, 1, 3)));
+
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
+		set_status(get_payment_id(0).unwrap(), PaymentStatus::Failure);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0)); // -> Failed
+
+		// Lease lapsed, but nothing else is queued: the head may be re-attempted.
+		System::set_block_number(4);
+		assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), 0));
+		assert_ok!(Treasury::do_try_state());
+	});
+}
+
+/// A rotation with nothing mature to promote must not rewrite the head's lease, emit
+/// `PayoutQueueRotated`, or refund the fee.
+#[test]
+fn self_rotation_does_not_refresh_lease_and_defer_maturing_spend() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(100), None));
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			2,
+			Box::new(200),
+			Some(5)
+		));
+		assert_eq!(NextPayout::<Test>::get(1u32), Some((0, 1, 3)));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(1, 5)]);
+
+		// Block 4: the head's order expired (3 < 4) but nothing in the queue is mature yet. No
+		// rotation happens and the head's lease is not renewed.
+		System::set_block_number(4);
+		assert_noop!(
+			Treasury::check_status(RuntimeOrigin::signed(1), 0),
+			Error::<Test, _>::NotAttempted
+		);
+		assert_eq!(NextPayout::<Test>::get(1u32), Some((0, 1, 3)));
+
+		// Block 5: spend 1 is mature, so a rotation must promote it right away.
+		System::set_block_number(5);
+		assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), 0));
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(1));
+		assert_eq!(PayoutQueue::<Test>::get(1u32), vec![(0, 5)]);
+		assert_ok!(Treasury::do_try_state());
+	});
+}
+
+/// `valid_from` may be at most `MaxSpendDelay` blocks in the future, so a far-future spend
+/// cannot occupy a payout queue slot that nothing permissionless can free.
+#[test]
+fn spend_valid_from_is_bounded_by_max_spend_delay() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+		// `MaxSpendDelay` is 10_000 in the mock: block 10_001 is the furthest schedulable.
+		assert_ok!(Treasury::spend(
+			RuntimeOrigin::signed(10),
+			Box::new(1),
+			1,
+			Box::new(6),
+			Some(10_001)
+		));
+		assert_noop!(
+			Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(7), Some(10_002)),
+			Error::<Test, _>::SpendTooFarInFuture
+		);
+		assert_noop!(
+			Treasury::spend(
+				RuntimeOrigin::signed(10),
+				Box::new(1),
+				1,
+				Box::new(7),
+				Some(u64::MAX - 5)
+			),
+			Error::<Test, _>::SpendTooFarInFuture
+		);
+		assert_ok!(Treasury::do_try_state());
+	});
+}
+
+/// `PayoutQueue` is `ValueQuery`, so draining a queue must remove the key instead of storing a
+/// permanent empty entry, and a sole-head rotation must not create one out of nothing.
+#[test]
+fn payout_queue_key_removed_when_drained() {
+	ExtBuilder::default().build().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(6), None));
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(7), None));
+		assert!(PayoutQueue::<Test>::contains_key(1u32));
+		for i in 0..2u32 {
+			assert_ok!(Treasury::payout(RuntimeOrigin::signed(1), i));
+			set_status(get_payment_id(i).unwrap(), PaymentStatus::Success);
+			assert_ok!(Treasury::check_status(RuntimeOrigin::signed(1), i));
+		}
+		assert!(NextPayout::<Test>::get(1u32).is_none());
+		assert!(!PayoutQueue::<Test>::contains_key(1u32), "drained queue must be removed");
+
+		// A sole-head rotation must not create an empty entry out of nothing.
+		assert_ok!(Treasury::spend(RuntimeOrigin::signed(10), Box::new(1), 1, Box::new(8), None));
+		assert!(!PayoutQueue::<Test>::contains_key(1u32));
+		System::set_block_number(4);
+		let _ = Treasury::check_status(RuntimeOrigin::signed(1), 2);
+		assert_eq!(NextPayout::<Test>::get(1u32).map(|(idx, _, _)| idx), Some(2));
+		assert!(!PayoutQueue::<Test>::contains_key(1u32), "sole-head rotation must not create it");
+		assert_ok!(Treasury::do_try_state());
 	});
 }

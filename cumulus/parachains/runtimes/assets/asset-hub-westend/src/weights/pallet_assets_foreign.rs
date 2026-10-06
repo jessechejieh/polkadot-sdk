@@ -184,14 +184,16 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `ForeignAssets::Account` (`max_values`: None, `max_size`: Some(732), added: 3207, mode: `MaxEncodedLen`)
 	/// Storage: `Revive::OriginalAccount` (r:1 w:1)
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
+	/// Storage: `AssetsPrecompiles::ForeignAssetIdToAssetIndex` (r:1 w:0)
+	/// Proof: `AssetsPrecompiles::ForeignAssetIdToAssetIndex` (`max_values`: None, `max_size`: Some(622), added: 3097, mode: `MaxEncodedLen`)
 	fn mint() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `2321`
+		//  Measured:  `2149`
 		//  Estimated: `4273`
 		// Minimum execution time: 44_001_000 picoseconds.
 		Weight::from_parts(47_882_000, 0)
 			.saturating_add(Weight::from_parts(0, 4273))
-			.saturating_add(T::DbWeight::get().reads(3))
+			.saturating_add(T::DbWeight::get().reads(4))
 			.saturating_add(T::DbWeight::get().writes(3))
 	}
 	/// Storage: `ForeignAssets::Asset` (r:1 w:1)
@@ -204,16 +206,18 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `Balances::Holds` (`max_values`: None, `max_size`: Some(409), added: 2884, mode: `MaxEncodedLen`)
 	/// Storage: `ForeignAssetsFreezer::Freezes` (r:1 w:1)
 	/// Proof: `ForeignAssetsFreezer::Freezes` (`max_values`: None, `max_size`: Some(721), added: 3196, mode: `MaxEncodedLen`)
+	/// Storage: `AssetsPrecompiles::ForeignAssetIdToAssetIndex` (r:1 w:0)
+	/// Proof: `AssetsPrecompiles::ForeignAssetIdToAssetIndex` (`max_values`: None, `max_size`: Some(622), added: 3097, mode: `MaxEncodedLen`)
 	/// Storage: `Revive::OriginalAccount` (r:0 w:1)
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
 	fn burn() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `2257`
+		//  Measured:  `2364`
 		//  Estimated: `4273`
 		// Minimum execution time: 92_266_000 picoseconds.
 		Weight::from_parts(98_735_000, 0)
 			.saturating_add(Weight::from_parts(0, 4273))
-			.saturating_add(T::DbWeight::get().reads(5))
+			.saturating_add(T::DbWeight::get().reads(6))
 			.saturating_add(T::DbWeight::get().writes(6))
 	}
 	/// Storage: `ForeignAssets::Asset` (r:1 w:1)
@@ -228,16 +232,17 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
 	/// Storage: `Balances::Holds` (r:1 w:1)
 	/// Proof: `Balances::Holds` (`max_values`: None, `max_size`: Some(409), added: 2884, mode: `MaxEncodedLen`)
+
 	/// Storage: `ForeignAssetsFreezer::Freezes` (r:1 w:1)
 	/// Proof: `ForeignAssetsFreezer::Freezes` (`max_values`: None, `max_size`: Some(721), added: 3196, mode: `MaxEncodedLen`)
 	fn transfer() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `5505`
+		//  Measured:  `5333`
 		//  Estimated: `7404`
 		// Minimum execution time: 131_057_000 picoseconds.
 		Weight::from_parts(141_222_000, 0)
 			.saturating_add(Weight::from_parts(0, 7404))
-			.saturating_add(T::DbWeight::get().reads(8))
+			.saturating_add(T::DbWeight::get().reads(9))
 			.saturating_add(T::DbWeight::get().writes(9))
 	}
 	/// Storage: `ForeignAssets::Asset` (r:1 w:1)
@@ -250,14 +255,16 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
 	/// Storage: `Revive::OriginalAccount` (r:1 w:1)
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
+	/// Storage: `AssetsPrecompiles::ForeignAssetIdToAssetIndex` (r:1 w:0)
+	/// Proof: `AssetsPrecompiles::ForeignAssetIdToAssetIndex` (`max_values`: None, `max_size`: Some(622), added: 3097, mode: `MaxEncodedLen`)
 	fn transfer_keep_alive() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `3712`
+		//  Measured:  `3540`
 		//  Estimated: `7404`
 		// Minimum execution time: 78_354_000 picoseconds.
 		Weight::from_parts(84_895_000, 0)
 			.saturating_add(Weight::from_parts(0, 7404))
-			.saturating_add(T::DbWeight::get().reads(6))
+			.saturating_add(T::DbWeight::get().reads(7))
 			.saturating_add(T::DbWeight::get().writes(5))
 	}
 	/// Storage: `ForeignAssets::Asset` (r:1 w:1)
@@ -276,12 +283,12 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `ForeignAssetsFreezer::Freezes` (`max_values`: None, `max_size`: Some(721), added: 3196, mode: `MaxEncodedLen`)
 	fn force_transfer() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `5505`
+		//  Measured:  `5333`
 		//  Estimated: `7404`
 		// Minimum execution time: 131_381_000 picoseconds.
 		Weight::from_parts(142_186_000, 0)
 			.saturating_add(Weight::from_parts(0, 7404))
-			.saturating_add(T::DbWeight::get().reads(8))
+			.saturating_add(T::DbWeight::get().reads(9))
 			.saturating_add(T::DbWeight::get().writes(9))
 	}
 	/// Storage: `ForeignAssets::Asset` (r:1 w:0)
@@ -495,16 +502,18 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
 	/// Storage: `Revive::OriginalAccount` (r:1 w:1)
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
+	/// Storage: `AssetsPrecompiles::ForeignAssetIdToAssetIndex` (r:1 w:0)
+	/// Proof: `AssetsPrecompiles::ForeignAssetIdToAssetIndex` (`max_values`: None, `max_size`: Some(622), added: 3097, mode: `MaxEncodedLen`)
 	/// Storage: `ForeignAssetsFreezer::Freezes` (r:1 w:1)
 	/// Proof: `ForeignAssetsFreezer::Freezes` (`max_values`: None, `max_size`: Some(721), added: 3196, mode: `MaxEncodedLen`)
 	fn transfer_approved() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `3816`
+		//  Measured:  `3644`
 		//  Estimated: `7404`
 		// Minimum execution time: 117_047_000 picoseconds.
 		Weight::from_parts(126_801_000, 0)
 			.saturating_add(Weight::from_parts(0, 7404))
-			.saturating_add(T::DbWeight::get().reads(8))
+			.saturating_add(T::DbWeight::get().reads(9))
 			.saturating_add(T::DbWeight::get().writes(8))
 	}
 	/// Storage: `ForeignAssets::Asset` (r:1 w:1)
@@ -643,14 +652,16 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
 	/// Storage: `Revive::OriginalAccount` (r:1 w:2)
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
+	/// Storage: `AssetsPrecompiles::ForeignAssetIdToAssetIndex` (r:1 w:0)
+	/// Proof: `AssetsPrecompiles::ForeignAssetIdToAssetIndex` (`max_values`: None, `max_size`: Some(622), added: 3097, mode: `MaxEncodedLen`)
 	fn transfer_all() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `5505`
+		//  Measured:  `5333`
 		//  Estimated: `7404`
 		// Minimum execution time: 146_599_000 picoseconds.
 		Weight::from_parts(154_116_000, 0)
 			.saturating_add(Weight::from_parts(0, 7404))
-			.saturating_add(T::DbWeight::get().reads(8))
+			.saturating_add(T::DbWeight::get().reads(9))
 			.saturating_add(T::DbWeight::get().writes(9))
 	}
 	/// Storage: `ForeignAssets::Asset` (r:1 w:0)

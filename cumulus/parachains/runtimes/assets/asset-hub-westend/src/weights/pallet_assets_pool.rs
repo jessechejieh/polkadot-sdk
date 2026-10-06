@@ -80,7 +80,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `PoolAssetsFreezer::Freezes` (`max_values`: None, `max_size`: Some(123), added: 2598, mode: `MaxEncodedLen`)
 	fn start_destroy() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `664`
+		//  Measured:  `385`
 		//  Estimated: `3675`
 		// Minimum execution time: 20_373_000 picoseconds.
 		Weight::from_parts(22_406_000, 0)
@@ -166,7 +166,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
 	fn mint() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `2321`
+		//  Measured:  `2042`
 		//  Estimated: `3675`
 		// Minimum execution time: 42_291_000 picoseconds.
 		Weight::from_parts(45_906_000, 0)
@@ -212,7 +212,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `PoolAssetsFreezer::Freezes` (`max_values`: None, `max_size`: Some(123), added: 2598, mode: `MaxEncodedLen`)
 	fn transfer() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `5500`
+		//  Measured:  `5221`
 		//  Estimated: `6208`
 		// Minimum execution time: 124_607_000 picoseconds.
 		Weight::from_parts(131_681_000, 0)
@@ -232,7 +232,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
 	fn transfer_keep_alive() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `3707`
+		//  Measured:  `3428`
 		//  Estimated: `6208`
 		// Minimum execution time: 73_292_000 picoseconds.
 		Weight::from_parts(77_769_000, 0)
@@ -256,7 +256,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `PoolAssetsFreezer::Freezes` (`max_values`: None, `max_size`: Some(123), added: 2598, mode: `MaxEncodedLen`)
 	fn force_transfer() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `5500`
+		//  Measured:  `5221`
 		//  Estimated: `6208`
 		// Minimum execution time: 124_326_000 picoseconds.
 		Weight::from_parts(131_499_000, 0)
@@ -479,7 +479,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `PoolAssetsFreezer::Freezes` (`max_values`: None, `max_size`: Some(123), added: 2598, mode: `MaxEncodedLen`)
 	fn transfer_approved() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `3811`
+		//  Measured:  `3532`
 		//  Estimated: `6208`
 		// Minimum execution time: 99_232_000 picoseconds.
 		Weight::from_parts(106_655_000, 0)
@@ -621,7 +621,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
 	fn transfer_all() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `5500`
+		//  Measured:  `5221`
 		//  Estimated: `6208`
 		// Minimum execution time: 140_090_000 picoseconds.
 		Weight::from_parts(152_516_000, 0)

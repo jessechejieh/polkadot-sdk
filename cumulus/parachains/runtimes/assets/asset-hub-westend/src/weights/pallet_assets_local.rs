@@ -178,7 +178,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
 	fn mint() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `2463`
+		//  Measured:  `2184`
 		//  Estimated: `3675`
 		// Minimum execution time: 43_853_000 picoseconds.
 		Weight::from_parts(47_879_000, 0)
@@ -232,7 +232,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `AssetsHolder::Holds` (`max_values`: None, `max_size`: Some(429), added: 2904, mode: `MaxEncodedLen`)
 	fn transfer() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `5613`
+		//  Measured:  `5334`
 		//  Estimated: `6208`
 		// Minimum execution time: 142_891_000 picoseconds.
 		Weight::from_parts(150_330_000, 0)
@@ -254,7 +254,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
 	fn transfer_keep_alive() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `3820`
+		//  Measured:  `3541`
 		//  Estimated: `6208`
 		// Minimum execution time: 80_718_000 picoseconds.
 		Weight::from_parts(86_863_000, 0)
@@ -282,7 +282,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `AssetsHolder::Holds` (`max_values`: None, `max_size`: Some(429), added: 2904, mode: `MaxEncodedLen`)
 	fn force_transfer() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `5613`
+		//  Measured:  `5334`
 		//  Estimated: `6208`
 		// Minimum execution time: 143_600_000 picoseconds.
 		Weight::from_parts(154_275_000, 0)
@@ -509,7 +509,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `AssetsHolder::Holds` (`max_values`: None, `max_size`: Some(429), added: 2904, mode: `MaxEncodedLen`)
 	fn transfer_approved() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `3924`
+		//  Measured:  `3645`
 		//  Estimated: `6208`
 		// Minimum execution time: 128_474_000 picoseconds.
 		Weight::from_parts(138_542_000, 0)
@@ -667,7 +667,7 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
 	fn transfer_all() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `5613`
+		//  Measured:  `5334`
 		//  Estimated: `6208`
 		// Minimum execution time: 165_594_000 picoseconds.
 		Weight::from_parts(177_327_000, 0)
@@ -688,14 +688,16 @@ impl<T: frame_system::Config> pallet_assets::WeightInfo for WeightInfo<T> {
 	}
 	/// Storage: `Assets::Account` (r:1 w:0)
 	/// Proof: `Assets::Account` (`max_values`: None, `max_size`: Some(134), added: 2609, mode: `MaxEncodedLen`)
+	/// Storage: `AssetsHolder::BalancesOnHold` (r:1 w:0)
+	/// Proof: `AssetsHolder::BalancesOnHold` (`max_values`: None, `max_size`: Some(84), added: 2559, mode: `MaxEncodedLen`)
 	fn balance() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `255`
+		//  Measured:  `331`
 		//  Estimated: `3599`
 		// Minimum execution time: 9_436_000 picoseconds.
 		Weight::from_parts(10_279_000, 0)
 			.saturating_add(Weight::from_parts(0, 3599))
-			.saturating_add(T::DbWeight::get().reads(1))
+			.saturating_add(T::DbWeight::get().reads(2))
 	}
 	/// Storage: `Assets::Approvals` (r:1 w:0)
 	/// Proof: `Assets::Approvals` (`max_values`: None, `max_size`: Some(148), added: 2623, mode: `MaxEncodedLen`)

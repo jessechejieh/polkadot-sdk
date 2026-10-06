@@ -129,7 +129,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `AssetsPrecompiles::AssetIndexToForeignAssetId` (`max_values`: None, `max_size`: Some(8), added: 2483, mode: `MaxEncodedLen`)
 	fn create() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `491`
+		//  Measured:  `594`
 		//  Estimated: `3675`
 		// Minimum execution time: 38_379_000 picoseconds.
 		Weight::from_parts(40_996_000, 3675)
@@ -146,7 +146,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `AssetsPrecompiles::AssetIndexToForeignAssetId` (`max_values`: None, `max_size`: Some(8), added: 2483, mode: `MaxEncodedLen`)
 	fn force_create() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `351`
+		//  Measured:  `454`
 		//  Estimated: `3675`
 		// Minimum execution time: 19_410_000 picoseconds.
 		Weight::from_parts(20_737_000, 3675)
@@ -216,7 +216,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `AssetsPrecompiles::AssetIndexToForeignAssetId` (`max_values`: None, `max_size`: Some(8), added: 2483, mode: `MaxEncodedLen`)
 	fn finish_destroy() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `629`
+		//  Measured:  `666`
 		//  Estimated: `3675`
 		// Minimum execution time: 25_702_000 picoseconds.
 		Weight::from_parts(27_436_000, 3675)
@@ -699,7 +699,7 @@ impl WeightInfo for () {
 	/// Proof: `AssetsPrecompiles::AssetIndexToForeignAssetId` (`max_values`: None, `max_size`: Some(8), added: 2483, mode: `MaxEncodedLen`)
 	fn create() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `491`
+		//  Measured:  `594`
 		//  Estimated: `3675`
 		// Minimum execution time: 38_379_000 picoseconds.
 		Weight::from_parts(40_996_000, 3675)
@@ -716,7 +716,7 @@ impl WeightInfo for () {
 	/// Proof: `AssetsPrecompiles::AssetIndexToForeignAssetId` (`max_values`: None, `max_size`: Some(8), added: 2483, mode: `MaxEncodedLen`)
 	fn force_create() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `351`
+		//  Measured:  `454`
 		//  Estimated: `3675`
 		// Minimum execution time: 19_410_000 picoseconds.
 		Weight::from_parts(20_737_000, 3675)
@@ -786,7 +786,7 @@ impl WeightInfo for () {
 	/// Proof: `AssetsPrecompiles::AssetIndexToForeignAssetId` (`max_values`: None, `max_size`: Some(8), added: 2483, mode: `MaxEncodedLen`)
 	fn finish_destroy() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `629`
+		//  Measured:  `666`
 		//  Estimated: `3675`
 		// Minimum execution time: 25_702_000 picoseconds.
 		Weight::from_parts(27_436_000, 3675)

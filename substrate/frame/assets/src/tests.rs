@@ -2712,8 +2712,10 @@ fn asset_category_membership_outlives_the_asset() {
 		assert_eq!(Assets::assets_in_category(b"usd", 10), vec![0]);
 		assert_ok!(Assets::remove_from_category(RuntimeOrigin::root(), b"usd".to_vec(), 0));
 		assert_eq!(Assets::assets_in_category(b"usd", 10), Vec::<u32>::new());
+	});
 }
 
+#[test]
 fn fungibles_inspect_is_sufficient_works() {
 	build_and_execute(|| {
 		use frame_support::traits::fungibles::Inspect;

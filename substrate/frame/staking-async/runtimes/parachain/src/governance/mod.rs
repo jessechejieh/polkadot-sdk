@@ -22,9 +22,9 @@ use crate::xcm_config::Collectives;
 use frame_support::{
 	parameter_types,
 	traits::{
-		fungible::HoldConsideration,                                                                                                                                                                                                                                       
-    tokens::{NoAssetCategories, UnityOrOuterConversion},                                                                                                                                                                                                               
-    EitherOf, EitherOfDiverse, FromContains, LinearStoragePrice, PalletInfoAccess,
+		fungible::HoldConsideration,
+		tokens::{NoAssetCategories, UnityOrOuterConversion},
+		EitherOf, EitherOfDiverse, FromContains, LinearStoragePrice, PalletInfoAccess,
 	},
 };
 use frame_system::EnsureRootWithSuccess;

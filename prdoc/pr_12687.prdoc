@@ -47,3 +47,17 @@ crates:
     bump: minor
   - name: kitchensink-runtime
     bump: minor
+  - name: pallet-asset-rewards
+    bump: patch
+  - name: pallet-assets-freezer
+    bump: patch
+  - name: pallet-assets-holder
+    bump: patch
+  - name: pallet-assets-precompiles
+    bump: patch
+  - name: pallet-contracts-mock-network
+    bump: patch
+  - name: staging-xcm-builder
+    bump: patch
+  - name: xcm-runtime-apis
+    bump: patch

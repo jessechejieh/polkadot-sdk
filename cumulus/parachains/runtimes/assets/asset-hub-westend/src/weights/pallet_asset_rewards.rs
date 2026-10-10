@@ -190,7 +190,7 @@ impl<T: frame_system::Config> pallet_asset_rewards::WeightInfo for WeightInfo<T>
 	/// Proof: `Revive::OriginalAccount` (`max_values`: None, `max_size`: Some(52), added: 2527, mode: `MaxEncodedLen`)
 	fn deposit_reward_tokens() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `4209`
+		//  Measured:  `3930`
 		//  Estimated: `6208`
 		// Minimum execution time: 105_080_000 picoseconds.
 		Weight::from_parts(110_751_000, 0)
